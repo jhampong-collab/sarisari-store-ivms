@@ -19,6 +19,9 @@ import re
 import secrets
 import sqlite3
 import time
+import json
+import urllib.request
+import urllib.error
 from contextlib import contextmanager
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
@@ -28,7 +31,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory, ses
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # Bump this when you ship an update. Every phone sees an "update available" banner.
-APP_VERSION = "1.3.1"
+APP_VERSION = "2.0.0-test.1"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -319,10 +322,7 @@ def init_db():
                            "ON CONFLICT (version) DO NOTHING")
                 db.execute("INSERT INTO schema_migrations (version) VALUES (1) "
                            "ON CONFLICT (version) DO NOTHING")
-                if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-                    db.execute("INSERT INTO users (username, password_hash, role, must_change) "
-                               "VALUES ('admin', ?, 'Owner', 1)",
-                               (generate_password_hash("admin123"),))
+                # v2 test: never bootstrap an insecure default legacy admin.
                 db.execute("COMMIT")
             except BaseException:
                 db.execute("ROLLBACK")
@@ -333,9 +333,7 @@ def init_db():
             for i in range(version, len(MIGRATIONS)):
                 db.executescript(MIGRATIONS[i])
                 db.execute(f"PRAGMA user_version = {i + 1}")
-            if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-                db.execute("INSERT INTO users (username, password_hash, role, must_change) "
-                           "VALUES ('admin', ?, 'Owner', 1)", (generate_password_hash("admin123"),))
+            # v2 test: never bootstrap an insecure default legacy admin.
     finally:
         db.close()
 
@@ -412,6 +410,13 @@ def handle_unexpected(e):
 
 
 @app.before_request
+def block_legacy_business_api():
+    # TEST BUILD: original endpoints are NOT tenant-aware; never expose them.
+    if request.path.startswith('/api/') and request.path not in ('/api/version', '/api/v2/config', '/api/v2/provision', '/api/v2/account'):
+        return jsonify({'error': 'This legacy endpoint is disabled until tenant isolation is implemented.'}), 403
+
+
+@app.before_request
 def csrf_guard():
     # A custom header can't be added by another website without our permission (CORS),
     # so requiring it on every change request blocks cross-site request forgery.
@@ -428,7 +433,7 @@ def add_headers(resp):
     resp.headers["Referrer-Policy"] = "same-origin"
     resp.headers["Content-Security-Policy"] = (
         "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
-        "connect-src 'self'; manifest-src 'self'; worker-src 'self'; "
+        "connect-src 'self' https:; manifest-src 'self'; worker-src 'self'; "
         "frame-ancestors 'none'; base-uri 'self'; form-action 'self'")
     if request.path.startswith("/api/"):
         resp.headers["Cache-Control"] = "no-store"
@@ -918,12 +923,12 @@ def _static_text(name):
 
 @app.get("/")
 def index():
-    return Response(_static_text("index.html"), mimetype="text/html")
+    return send_from_directory(STATIC_DIR, "onboarding.html")
 
 
 @app.get("/sw.js")
 def service_worker():
-    resp = Response(_static_text("sw.js"), mimetype="application/javascript")
+    resp = Response("self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.registration.unregister().then(()=>caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k))))));", mimetype="application/javascript")
     resp.headers["Service-Worker-Allowed"] = "/"
     return resp
 
@@ -936,6 +941,77 @@ def manifest():
 @app.get("/healthz")
 def healthz():
     return jsonify({"ok": True, "version": APP_VERSION})
+
+
+@app.get('/api/v2/config')
+def v2_config():
+    return jsonify({'url': os.environ.get('SUPABASE_URL','').rstrip('/'), 'key': os.environ.get('SUPABASE_PUBLISHABLE_KEY','')})
+
+
+def _supabase_request(path, method='GET', payload=None, bearer=None):
+    base = os.environ.get('SUPABASE_URL', '').rstrip('/')
+    key = os.environ.get('SUPABASE_PUBLISHABLE_KEY', '')
+    if not base.startswith('https://') or not key:
+        raise ApiError('Supabase authentication is not configured.', 503)
+    headers = {'apikey': key, 'Content-Type': 'application/json'}
+    if bearer:
+        headers['Authorization'] = 'Bearer ' + bearer
+    data = json.dumps(payload).encode() if payload is not None else None
+    req = urllib.request.Request(base + '/auth/v1/' + path, data=data, headers=headers, method=method)
+    try:
+        with urllib.request.urlopen(req, timeout=12) as resp:
+            return json.load(resp)
+    except urllib.error.HTTPError as e:
+        raise ApiError('Authentication request was rejected.', 401 if e.code in (401,403) else 502)
+    except (urllib.error.URLError, TimeoutError):
+        raise ApiError('Authentication service is unavailable.', 503)
+
+
+def _verified_auth_user():
+    header = request.headers.get('Authorization', '')
+    if not header.startswith('Bearer ') or len(header) > 4096:
+        raise ApiError('Sign in required.', 401)
+    user = _supabase_request('user', bearer=header[7:])
+    if not user.get('email_confirmed_at'):
+        raise ApiError('Verify your email before activating your store.', 403)
+    return user
+
+
+@app.post('/api/v2/provision')
+def v2_provision():
+    user = _verified_auth_user()
+    user_id = user['id']
+    metadata = user.get('user_metadata') or {}
+    name = str(metadata.get('store_name') or '').strip()
+    full_name = str(metadata.get('full_name') or '').strip()
+    if not (1 <= len(name) <= 120 and 1 <= len(full_name) <= 120):
+        raise ApiError('Store name and owner name are required.', 400)
+    if not USE_POSTGRES:
+        raise ApiError('Test PostgreSQL connection required.', 503)
+    db = get_db()
+    db.execute('BEGIN')
+    try:
+        db.execute('SELECT pg_advisory_xact_lock(hashtext(?))', (user_id,))
+        row = db.execute("SELECT store_id FROM store_memberships WHERE user_id = ? AND role = 'owner' LIMIT 1", (user_id,)).fetchone()
+        if row:
+            store_id = str(row['store_id'])
+        else:
+            store = db.execute('INSERT INTO stores(name) VALUES (?) RETURNING id', (name,)).fetchone()
+            store_id = str(store['id'])
+            db.execute("INSERT INTO store_memberships(store_id,user_id,role) VALUES (?,?,'owner')", (store_id,user_id))
+        db.execute('INSERT INTO user_profiles(user_id,full_name) VALUES (?,?) ON CONFLICT (user_id) DO UPDATE SET full_name=EXCLUDED.full_name', (user_id,full_name))
+        db.execute('COMMIT')
+    except BaseException:
+        db.execute('ROLLBACK')
+        raise
+    return jsonify({'ok': True, 'store_id': store_id, 'message': 'Store account activated. Inventory dashboard is not yet enabled in this test build.'})
+
+
+@app.get('/api/v2/account')
+def v2_account():
+    user = _verified_auth_user()
+    row = get_db().execute("SELECT s.id,s.name,m.role FROM store_memberships m JOIN stores s ON s.id=m.store_id WHERE m.user_id=? AND m.role='owner' LIMIT 1", (user['id'],)).fetchone()
+    return jsonify({'email': user.get('email'), 'store': dict(row) if row else None})
 
 
 init_db()
