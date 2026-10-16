@@ -31,7 +31,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory, ses
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # Bump this when you ship an update. Every phone sees an "update available" banner.
-APP_VERSION = "2.0.0-test.2"
+APP_VERSION = "2.0.0-test.4"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -1015,7 +1015,7 @@ def v2_provision():
 @app.get('/api/v2/account')
 def v2_account():
     user = _verified_auth_user()
-    row = get_db().execute("SELECT s.id,s.name,m.role FROM store_memberships m JOIN stores s ON s.id=m.store_id WHERE m.user_id=? AND m.role='owner' LIMIT 1", (user['id'],)).fetchone()
+    row = get_db().execute("SELECT s.id,s.name,m.role FROM store_memberships m JOIN stores s ON s.id=m.store_id WHERE m.user_id=? ORDER BY CASE WHEN m.role='owner' THEN 0 ELSE 1 END, s.name LIMIT 1", (user['id'],)).fetchone()
     return jsonify({'email': user.get('email'), 'store': dict(row) if row else None})
 
 
@@ -1030,9 +1030,95 @@ def _v2_context():
         (user['id'],)).fetchone()
     if not row:
         raise ApiError('Activate your verified store first.', 403)
-    if row['role'] != 'owner':
-        raise ApiError('Staff accounts are not enabled in this release.', 403)
+    if row['role'] not in ('owner','manager','cashier'):
+        raise ApiError('Unrecognized membership role.', 403)
     return str(row['id']), str(user['id']), row
+
+
+def _v2_require(*roles):
+    sid, uid, store = _v2_context()
+    if store['role'] not in roles:
+        raise ApiError('Your store role does not allow this operation.', 403)
+    return sid, uid, store
+
+
+@app.get('/api/v2/staff/invitations')
+def v2_list_staff_invitations():
+    sid, _, _ = _v2_require('owner')
+    rows = get_db().execute('SELECT id,email,role,status,created_at,expires_at FROM staff_invitations WHERE store_id=? ORDER BY created_at DESC LIMIT 100', (sid,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post('/api/v2/staff/invitations')
+def v2_invite_staff():
+    sid, uid, _ = _v2_require('owner')
+    d = request.get_json(silent=True) or {}
+    email = str(d.get('email', '')).strip().lower()
+    role = str(d.get('role', '')).strip().lower()
+    if len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
+        raise ApiError('Enter a valid staff email address.', 400)
+    if role not in ('manager', 'cashier'):
+        raise ApiError('Choose manager or cashier.', 400)
+    if email == str(_verified_auth_user().get('email', '')).strip().lower():
+        raise ApiError('You cannot invite yourself.', 400)
+    with write_tx() as db:
+        db.execute("UPDATE staff_invitations SET status='expired' WHERE store_id=? AND status='pending' AND expires_at<=now()", (sid,))
+        already = db.execute('SELECT 1 FROM store_memberships m JOIN auth.users u ON u.id=m.user_id WHERE m.store_id=? AND lower(u.email)=?', (sid,email)).fetchone()
+        if already: raise ApiError('This user is already a store member.', 409)
+        exists = db.execute("SELECT 1 FROM staff_invitations WHERE store_id=? AND lower(trim(email))=? AND status='pending'", (sid,email)).fetchone()
+        if exists: raise ApiError('An invitation is already pending for this email.', 409)
+        row = db.execute("INSERT INTO staff_invitations(store_id,email,role,invited_by) VALUES (?,?,?,?) RETURNING id", (sid,email,role,uid)).fetchone()
+    return jsonify({'id':str(row['id']), 'email':email,'role':role,'message':'Invitation saved. Share its ID privately with the invited staff member; email delivery is not enabled yet.'}), 201
+
+
+@app.post('/api/v2/staff/invitations/<invitation_id>/revoke')
+def v2_revoke_invitation(invitation_id):
+    sid, _, _ = _v2_require('owner')
+    with write_tx() as db:
+        row = db.execute("UPDATE staff_invitations SET status='revoked' WHERE id=? AND store_id=? AND status='pending' RETURNING id", (invitation_id,sid)).fetchone()
+        if not row: raise ApiError('Pending invitation not found.', 404)
+    return jsonify({'ok':True})
+
+
+@app.post('/api/v2/staff/accept')
+def v2_accept_invitation():
+    user = _verified_auth_user()
+    uid = str(user['id'])
+    email = str(user.get('email','')).strip().lower()
+    d = request.get_json(silent=True) or {}
+    invitation_id = str(d.get('invitation_id','')).strip()
+    try:
+        import uuid
+        uuid.UUID(invitation_id)
+    except (ValueError, AttributeError):
+        raise ApiError('Invalid invitation ID.', 400)
+    with write_tx() as db:
+        inv = db.execute('SELECT * FROM staff_invitations WHERE id=? FOR UPDATE', (invitation_id,)).fetchone()
+        if not inv or inv['status']!='pending': raise ApiError('Invitation is not pending.', 404)
+        if inv['expires_at'] <= datetime.now(timezone.utc): raise ApiError('Invitation has expired.', 410)
+        if inv['email'].strip().lower()!=email: raise ApiError('This invitation belongs to a different verified email.', 403)
+        exists = db.execute('SELECT 1 FROM store_memberships WHERE store_id=? AND user_id=?', (inv['store_id'],uid)).fetchone()
+        if exists: raise ApiError('You already belong to this store.', 409)
+        db.execute('INSERT INTO store_memberships(store_id,user_id,role) VALUES (?,?,?)', (inv['store_id'],uid,inv['role']))
+        db.execute("UPDATE staff_invitations SET status='accepted',accepted_at=now() WHERE id=?", (invitation_id,))
+        db.execute("INSERT INTO user_profiles(user_id,full_name) VALUES (?,?) ON CONFLICT(user_id) DO NOTHING", (uid, str((user.get('user_metadata') or {}).get('full_name') or email).strip()[:120]))
+    return jsonify({'ok':True,'message':'Invitation accepted. Open your store dashboard.'})
+
+
+@app.get('/api/v2/staff/members')
+def v2_staff_members():
+    sid, _, _ = _v2_require('owner')
+    rows = get_db().execute('SELECT m.user_id,m.role,u.email,p.full_name FROM store_memberships m JOIN auth.users u ON u.id=m.user_id LEFT JOIN user_profiles p ON p.user_id=m.user_id WHERE m.store_id=? ORDER BY m.created_at', (sid,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post('/api/v2/staff/members/<user_id>/remove')
+def v2_remove_staff(user_id):
+    sid, _, _ = _v2_require('owner')
+    with write_tx() as db:
+        row=db.execute("DELETE FROM store_memberships WHERE store_id=? AND user_id=? AND role IN ('manager','cashier') RETURNING user_id", (sid,user_id)).fetchone()
+        if not row: raise ApiError('Staff member not found.', 404)
+    return jsonify({'ok':True})
 
 
 def _v2_product(db, sid, pid):
@@ -1077,7 +1163,7 @@ def v2_products():
 
 @app.post('/api/v2/products')
 def v2_add_product():
-    sid,_,_=_v2_context()
+    sid,_,_=_v2_require('owner','manager')
     d=request.get_json(silent=True) or {}
     pid=text_field(d,'id','Product ID',30)
     if not re.fullmatch(r'[\w.\-]+',pid):
@@ -1104,7 +1190,7 @@ def v2_add_product():
 
 @app.post('/api/v2/products/<pid>/restock')
 def v2_restock(pid):
-    sid,_,_=_v2_context()
+    sid,_,_=_v2_require('owner','manager')
     qty=parse_int((request.get_json(silent=True) or {}).get('quantity'),'Quantity',1)
     with write_tx() as db:
         result=db.execute('UPDATE products SET quantity=quantity+? WHERE store_id=? AND id=?', (qty,sid,pid))
@@ -1114,7 +1200,7 @@ def v2_restock(pid):
 
 @app.post('/api/v2/sales')
 def v2_sale():
-    sid,uid,_=_v2_context()
+    sid,uid,_=_v2_require('owner','manager','cashier')
     d=request.get_json(silent=True) or {}
     qty=parse_int(d.get('quantity'),'Quantity',1)
     pid=str(d.get('product_id','')).strip()
@@ -1135,7 +1221,7 @@ def v2_customers():
 
 @app.post('/api/v2/customers')
 def v2_add_customer():
-    sid,_,_=_v2_context()
+    sid,_,_=_v2_require('owner','manager')
     d=request.get_json(silent=True) or {}
     cid=text_field(d,'id','Customer ID',30)
     if not re.fullmatch(r'[\w.\-]+',cid): raise ApiError('Invalid customer ID.')
@@ -1152,7 +1238,7 @@ def v2_add_customer():
 
 @app.post('/api/v2/customers/<cid>/charge')
 def v2_charge(cid):
-    sid,uid,_=_v2_context()
+    sid,uid,_=_v2_require('owner','manager')
     d=request.get_json(silent=True) or {}
     pid=str(d.get('product_id','')).strip()
     qty=parse_int(d.get('quantity'),'Quantity',1)
@@ -1170,7 +1256,7 @@ def v2_charge(cid):
 
 @app.post('/api/v2/customers/<cid>/payment')
 def v2_payment(cid):
-    sid,uid,_=_v2_context()
+    sid,uid,_=_v2_require('owner','manager')
     amount=parse_money((request.get_json(silent=True) or {}).get('amount'),'Payment')
     with write_tx() as db:
         _v2_customer(db,sid,cid)
@@ -1183,7 +1269,7 @@ def v2_payment(cid):
 
 @app.get('/api/v2/customers/<cid>/ledger')
 def v2_ledger(cid):
-    sid,_,_=_v2_context()
+    sid,_,_=_v2_require('owner','manager')
     db=get_db()
     customer=_v2_customer(db,sid,cid)
     rows=db.execute('SELECT * FROM credit_tx WHERE store_id=? AND customer_id=? ORDER BY id DESC LIMIT 200',(sid,cid)).fetchall()
@@ -1192,7 +1278,7 @@ def v2_ledger(cid):
 
 @app.get('/api/v2/reports')
 def v2_reports():
-    sid,_,_=_v2_context()
+    sid,_,_=_v2_require('owner','manager')
     db=get_db()
     sales=db.execute('SELECT product_name,quantity,unit_price_cents,unit_cost_cents,sold_at FROM sales WHERE store_id=? ORDER BY id DESC LIMIT 500',(sid,)).fetchall()
     return jsonify({'recent_sales':[{'product':r['product_name'],'quantity':r['quantity'],'total':r['quantity']*r['unit_price_cents']/100,'at':r['sold_at']} for r in sales],

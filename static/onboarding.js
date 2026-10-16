@@ -24,3 +24,5 @@ const showMode=mode=>{const reg=mode==='register';$('register-fields').hidden=!r
 $('tab-login').onclick=()=>showMode('login');$('tab-register').onclick=()=>showMode('register');$('toggle-password').onclick=()=>{const input=$('password');input.type=input.type==='password'?'text':'password';$('toggle-password').textContent=input.type==='password'?'Show':'Hide';};
 const oldMessage=message;message=t=>{oldMessage(t);if(/Signed in|Email confirmed/.test(t)){$('activate').hidden=false;$('signout').hidden=false;}if(/Store account activated/.test(t)){$('activate').hidden=true;$('signout').hidden=false;}if(/Signed out/.test(t)){$('activate').hidden=true;$('signout').hidden=true;}};
 showMode('login');
+
+$('staff-accept').onclick=async()=>{try{if(!token)throw Error('Sign in first with the invited email.');const id=$('staff-invite-id').value.trim();const j=await request('/api/v2/staff/accept','POST',{invitation_id:id},true);message(j.message);location.assign('/dashboard')}catch(e){message(e.message)}};

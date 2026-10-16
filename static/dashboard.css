@@ -31,3 +31,5 @@
   .utility-button{padding:10px 12px;min-height:42px}
   main{padding-top:20px}
 }
+
+.staff-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 0;border-bottom:1px solid #ccd7e5;overflow-wrap:anywhere}.staff-row span{flex:1;min-width:170px}.staff-row button{padding:8px 12px;border-radius:8px} :root[data-theme='dark'] .staff-row{border-color:#30425e}
