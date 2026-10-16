@@ -111,3 +111,8 @@ h2.section { font-size: 1rem; margin: 18px 2px 8px; }
 .spaced-bottom { margin-bottom: 12px; }
 .role-chip { background: var(--green-soft); color: var(--green); }
 @media (prefers-color-scheme: dark) { .role-chip { color: #7fd6a4; } }
+
+/* v1.2 report and low-stock improvements */
+.stock-warning { background: var(--warn-soft); color: var(--warn); margin-bottom: 12px; }
+.export-actions { display: grid; grid-template-columns: 1fr; gap: 8px; }
+.export-actions a { display: block; text-align: center; text-decoration: none; }

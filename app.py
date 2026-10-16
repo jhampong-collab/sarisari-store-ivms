@@ -13,6 +13,8 @@ Run (real use):      see README.md  (needs HTTPS for phones to install it)
 """
 
 import os
+import csv
+import io
 import re
 import secrets
 import sqlite3
@@ -26,7 +28,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory, ses
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # Bump this when you ship an update. Every phone sees an "update available" banner.
-APP_VERSION = "1.1.0"
+APP_VERSION = "1.2.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -181,6 +183,11 @@ MIGRATIONS = [
         username     TEXT NOT NULL
     );
     """,
+    # v2: nullable costs protect historical records (unknown != zero).
+    """
+    ALTER TABLE products ADD COLUMN cost_cents INTEGER CHECK (cost_cents >= 0);
+    ALTER TABLE sales ADD COLUMN unit_cost_cents INTEGER CHECK (unit_cost_cents >= 0);
+    """,
 ]
 
 ROLE_OWNER, ROLE_ADMIN, ROLE_STAFF = "Owner", "Admin", "Staff"
@@ -306,6 +313,10 @@ def init_db():
                 for statement in PG_SCHEMA.split(";"):
                     if statement.strip():
                         db.execute(statement)
+                db.execute("ALTER TABLE products ADD COLUMN IF NOT EXISTS cost_cents INTEGER CHECK (cost_cents >= 0)")
+                db.execute("ALTER TABLE sales ADD COLUMN IF NOT EXISTS unit_cost_cents INTEGER CHECK (unit_cost_cents >= 0)")
+                db.execute("INSERT INTO schema_migrations (version) VALUES (2) "
+                           "ON CONFLICT (version) DO NOTHING")
                 db.execute("INSERT INTO schema_migrations (version) VALUES (1) "
                            "ON CONFLICT (version) DO NOTHING")
                 if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
@@ -563,7 +574,8 @@ def product_json(row):
         status = "OK"
     return {"id": row["id"], "name": row["name"], "category": row["category"],
             "price": row["price_cents"] / 100, "quantity": row["quantity"],
-            "reorder_level": row["reorder_level"], "expiration": exp, "status": status}
+            "reorder_level": row["reorder_level"], "expiration": exp, "status": status,
+            "cost": row["cost_cents"] / 100 if row["cost_cents"] is not None else None}
 
 
 def get_product(db, product_id):
@@ -590,6 +602,7 @@ def add_product():
     name = text_field(d, "name", "Name", 80)
     category = text_field(d, "category", "Category", 40, required=False)
     price = parse_money(d.get("price"), "Price", allow_zero=True)
+    cost = parse_money(d.get("cost"), "Purchase cost", allow_zero=True) if str(d.get("cost", "")).strip() else None
     qty = parse_int(d.get("quantity"), "Quantity")
     reorder = parse_int(d.get("reorder_level", 10), "Reorder level")
     exp = text_field(d, "expiration", "Expiration date", 10, required=False) or None
@@ -602,9 +615,20 @@ def add_product():
         if db.execute("SELECT 1 FROM products WHERE id = ?", (pid,)).fetchone():
             raise ApiError(f"Product ID '{pid}' already exists.", 409)
         db.execute("INSERT INTO products (id, name, category, price_cents, quantity, "
-                   "reorder_level, expiration) VALUES (?,?,?,?,?,?,?)",
-                   (pid, name, category, price, qty, reorder, exp))
+                   "reorder_level, expiration, cost_cents) VALUES (?,?,?,?,?,?,?,?)",
+                   (pid, name, category, price, qty, reorder, exp, cost))
     return jsonify(product_json(get_product(get_db(), pid))), 201
+
+
+@app.patch("/api/products/<product_id>/cost")
+@login_required("add_product")
+def set_product_cost(product_id):
+    d = request.get_json(silent=True) or {}
+    cost = parse_money(d.get("cost"), "Purchase cost", allow_zero=True)
+    with write_tx() as db:
+        product = get_product(db, product_id)
+        db.execute("UPDATE products SET cost_cents = ? WHERE id = ?", (cost, product["id"]))
+    return jsonify(product_json(get_product(get_db(), product_id)))
 
 
 @app.post("/api/products/<product_id>/restock")
@@ -629,9 +653,9 @@ def cash_sale():
         if cur.rowcount == 0:
             raise ApiError(f"Not enough stock for '{product['name']}'. Available: {product['quantity']}")
         db.execute("INSERT INTO sales (product_id, product_name, quantity, unit_price_cents, "
-                   "sold_at, username) VALUES (?,?,?,?,?,?)",
+                   "sold_at, username, unit_cost_cents) VALUES (?,?,?,?,?,?,?)",
                    (product["id"], product["name"], qty, product["price_cents"],
-                    now().isoformat(timespec="seconds"), current_user()["username"]))
+                    now().isoformat(timespec="seconds"), current_user()["username"], product["cost_cents"]))
     total = qty * product["price_cents"]
     return jsonify({"total": total / 100, "message": f"Sold {qty} x {product['name']} = {peso(total)}"})
 
@@ -737,10 +761,18 @@ def reports():
     today_prefix = today().isoformat()
     best = db.execute("SELECT product_name, SUM(quantity) AS qty FROM sales GROUP BY product_id, product_name "
                       "ORDER BY qty DESC, product_name LIMIT 5").fetchall()
+    today_rows = db.execute("SELECT quantity, unit_price_cents, unit_cost_cents FROM sales WHERE sold_at LIKE ?", (today_prefix + "%",)).fetchall()
+    today_known_profit = sum(r["quantity"] * (r["unit_price_cents"] - r["unit_cost_cents"]) for r in today_rows if r["unit_cost_cents"] is not None)
+    today_unknown = sum(r["quantity"] for r in today_rows if r["unit_cost_cents"] is None)
+    today_transactions = one("SELECT COUNT(*) FROM sales WHERE sold_at LIKE ?", today_prefix + "%")
     owing = db.execute("SELECT * FROM customers WHERE balance_cents > 0 "
                        "ORDER BY balance_cents DESC").fetchall()
     products = [product_json(r) for r in db.execute("SELECT * FROM products ORDER BY name COLLATE NOCASE")]
     return jsonify({
+        "today_transactions": today_transactions,
+        "today_profit_known": today_known_profit / 100,
+        "today_profit_missing_cost_units": today_unknown,
+        "today_profit_complete": today_unknown == 0,
         "cash_sales_total": one("SELECT SUM(quantity * unit_price_cents) FROM sales") / 100,
         "cash_sales_today": one("SELECT SUM(quantity * unit_price_cents) FROM sales WHERE sold_at LIKE ?",
                                 today_prefix + "%") / 100,
@@ -752,6 +784,34 @@ def reports():
         "low_stock": [p for p in products if p["status"] == "LOW STOCK"],
         "expired": [p for p in products if p["status"] == "EXPIRED"],
     })
+
+
+@app.get("/api/export/<kind>.csv")
+@login_required("reports")
+def export_csv(kind):
+    # Spreadsheet-safe values and no modification to stored records.
+    queries = {
+        "products": ("SELECT id, name, category, price_cents, cost_cents, quantity, reorder_level, expiration FROM products ORDER BY name", ("id", "name", "category", "price_cents", "cost_cents", "quantity", "reorder_level", "expiration")),
+        "sales": ("SELECT id, product_id, product_name, quantity, unit_price_cents, unit_cost_cents, sold_at, username FROM sales ORDER BY id DESC", ("id", "product_id", "product_name", "quantity", "unit_price_cents", "unit_cost_cents", "sold_at", "username")),
+        "credit": ("SELECT id, customer_id, tx_type, amount_cents, description, tx_at, username FROM credit_tx ORDER BY id DESC", ("id", "customer_id", "tx_type", "amount_cents", "description", "tx_at", "username")),
+    }
+    if kind not in queries:
+        raise ApiError("Unknown export type", 404)
+    query, cols = queries[kind]
+    rows = get_db().execute(query).fetchall()
+    output = io.StringIO(newline="")
+    writer = csv.writer(output)
+    writer.writerow(cols)
+    for row in rows:
+        cells = []
+        for col in cols:
+            value = row[col]
+            if isinstance(value, str) and value.lstrip().startswith(("=", "+", "-", "@")):
+                value = "'" + value
+            cells.append("" if value is None else value)
+        writer.writerow(cells)
+    return Response("\ufeff" + output.getvalue(), mimetype="text/csv; charset=utf-8",
+                    headers={"Content-Disposition": f"attachment; filename=sari-sari-{kind}.csv", "Cache-Control": "no-store"})
 
 
 # ======================================================================

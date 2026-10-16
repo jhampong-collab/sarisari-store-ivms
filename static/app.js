@@ -298,7 +298,11 @@ async function productsView() {
   };
   search.addEventListener("input", paint);
   paint();
-  return h("div", {}, h("div", { class: "toolbar" }, search,
+  const low = S.products.filter((p) => p.status === "LOW STOCK");
+  const warning = low.length ? h("div", { class: "card stock-warning" },
+    h("div", { class: "strong" }, `⚠ ${low.length} product(s) need restocking`),
+    h("div", { class: "small" }, low.slice(0, 5).map((p) => `${p.name}: ${p.quantity} left`).join(" · "))) : null;
+  return h("div", {}, warning, h("div", { class: "toolbar" }, search,
     can("add_product") && h("button", { class: "btn btn-primary", onclick: openAddProduct }, "+ Add")), list);
 }
 function productCard(p) {
@@ -315,7 +319,19 @@ function openProductSheet(p) {
   openSheet(p.name, kv([
     ["Product ID", p.id], ["Category", p.category || "\u2014"], ["Price", peso(p.price)],
     ["In stock", String(p.quantity)], ["Reorder at", String(p.reorder_level)],
-    ["Expires", p.expiration || "\u2014"]]), h("p", { class: "spaced" }, statusBadge(p)), h("div", { class: "spaced" }, actions));
+    ["Expires", p.expiration || "\u2014"],
+    ...(can("add_product") ? [["Purchase cost", p.cost == null ? "Not set" : peso(p.cost)]] : [])]),
+    h("p", { class: "spaced" }, statusBadge(p)),
+    can("add_product") && h("button", { class: "btn btn-block", onclick: () => openCostEditor(p) }, "Set purchase cost"),
+    h("div", { class: "spaced" }, actions));
+}
+function openCostEditor(p) {
+  openSheet(`Purchase cost: ${p.name}`, buildForm([
+    { name: "cost", label: "Cost per unit (₱)", inputmode: "decimal", value: p.cost == null ? "" : String(p.cost) }
+  ], "Save cost", async (v) => {
+    await api(`/api/products/${encodeURIComponent(p.id)}/cost`, { method: "PATCH", body: v });
+    closeSheet(); toast("Purchase cost saved. Future sales will use this cost."); showTab("products");
+  }));
 }
 function openSell(p) {
   const form = buildForm([{ name: "quantity", label: `Quantity to sell (${p.quantity} in stock)`, inputmode: "numeric", value: "1" }],
@@ -342,6 +358,7 @@ function openAddProduct() {
     { name: "name", label: "Name", maxlength: 80, autocapitalize: "words" },
     { name: "category", label: "Category (optional)", maxlength: 40, autocapitalize: "words" },
     { name: "price", label: "Price (\u20B1)", inputmode: "decimal" },
+    { name: "cost", label: "Purchase cost (₱, optional)", inputmode: "decimal", help: "Needed for profit calculations. Can be added later." },
     { name: "quantity", label: "Starting quantity", inputmode: "numeric" },
     { name: "reorder_level", label: "Reorder level", inputmode: "numeric", value: "10", help: "You get a low-stock warning at or below this number." },
     { name: "expiration", label: "Expiration date (only if it expires)", type: "date" },
@@ -452,10 +469,16 @@ async function reportsView() {
   return h("div", {},
     h("div", { class: "stats" },
       stat("Cash sales today", peso(r.cash_sales_today), "", true),
+      stat("Sales transactions today", String(r.today_transactions)),
+      stat(r.today_profit_complete ? "Gross profit today" : "Known gross profit today", peso(r.today_profit_known)),
       stat("Cash sales (all time)", peso(r.cash_sales_total)),
       stat("Credit given", peso(r.credit_charged)),
       stat("Payments received", peso(r.credit_paid)),
       stat("Still owed to you", peso(r.outstanding), r.outstanding > 0 ? "danger" : "")),
+    !r.today_profit_complete && h("div", { class: "card stock-warning" }, `Profit is incomplete: ${r.today_profit_missing_cost_units} unit(s) sold without recorded purchase cost. Historical costs are not guessed.`),
+    h("h2", { class: "section" }, "Export reports (CSV / Excel)"),
+    h("div", { class: "export-actions" },
+      ...["products", "sales", "credit"].map((kind) => h("a", { class: "btn", href: `/api/export/${kind}.csv`, download: `sari-sari-${kind}.csv` }, `Download ${kind}`))),
     section("Best sellers", r.best_sellers, (b) => line(b.name, `${b.quantity} sold`)),
     section("Customers who owe", r.customers_with_balance, (c) => line(c.name, peso(c.balance), "danger")),
     section("Low stock", r.low_stock, (p) => line(p.name, `${p.quantity} left`)),
