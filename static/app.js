@@ -20,7 +20,10 @@ function h(tag, attrs, ...children) {
 }
 const $ = (sel) => document.querySelector(sel);
 const can = (action) => !!S.me && S.me.permissions.includes(action);
-const peso = (n) => "\u20B1" + Number(n).toLocaleString("en-PH", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+const peso = (n) => "PHP " + Number(n).toLocaleString("en-PH", {
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2
+});
 const fmtDate = (iso) => {
   const d = new Date(iso);
   return isNaN(d) ? iso : d.toLocaleString("en-PH", { month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
