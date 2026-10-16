@@ -31,7 +31,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory, ses
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # Bump this when you ship an update. Every phone sees an "update available" banner.
-APP_VERSION = "2.0.0-test.1"
+APP_VERSION = "2.0.0-test.2"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -412,7 +412,7 @@ def handle_unexpected(e):
 @app.before_request
 def block_legacy_business_api():
     # TEST BUILD: original endpoints are NOT tenant-aware; never expose them.
-    if request.path.startswith('/api/') and request.path not in ('/api/version', '/api/v2/config', '/api/v2/provision', '/api/v2/account'):
+    if request.path.startswith('/api/') and not (request.path.startswith('/api/v2/') or request.path == '/api/version'):
         return jsonify({'error': 'This legacy endpoint is disabled until tenant isolation is implemented.'}), 403
 
 
@@ -943,6 +943,11 @@ def healthz():
     return jsonify({"ok": True, "version": APP_VERSION})
 
 
+@app.get('/dashboard')
+def v2_dashboard():
+    return send_from_directory(STATIC_DIR, 'dashboard.html')
+
+
 @app.get('/api/v2/config')
 def v2_config():
     return jsonify({'url': os.environ.get('SUPABASE_URL','').rstrip('/'), 'key': os.environ.get('SUPABASE_PUBLISHABLE_KEY','')})
@@ -1004,7 +1009,7 @@ def v2_provision():
     except BaseException:
         db.execute('ROLLBACK')
         raise
-    return jsonify({'ok': True, 'store_id': store_id, 'message': 'Store account activated. Inventory dashboard is not yet enabled in this test build.'})
+    return jsonify({'ok': True, 'store_id': store_id, 'message': 'Store account activated. Opening your private dashboard.'})
 
 
 @app.get('/api/v2/account')
@@ -1013,6 +1018,185 @@ def v2_account():
     row = get_db().execute("SELECT s.id,s.name,m.role FROM store_memberships m JOIN stores s ON s.id=m.store_id WHERE m.user_id=? AND m.role='owner' LIMIT 1", (user['id'],)).fetchone()
     return jsonify({'email': user.get('email'), 'store': dict(row) if row else None})
 
+
+
+# STEP 6: Tenant-safe business endpoints. Never accept store_id from the browser.
+def _v2_context():
+    user = _verified_auth_user()
+    if not USE_POSTGRES:
+        raise ApiError('PostgreSQL is required.', 503)
+    row = get_db().execute('SELECT s.id,s.name,m.role FROM store_memberships m '
+        'JOIN stores s ON s.id=m.store_id WHERE m.user_id=? ORDER BY s.name LIMIT 1',
+        (user['id'],)).fetchone()
+    if not row:
+        raise ApiError('Activate your verified store first.', 403)
+    if row['role'] != 'owner':
+        raise ApiError('Staff accounts are not enabled in this release.', 403)
+    return str(row['id']), str(user['id']), row
+
+
+def _v2_product(db, sid, pid):
+    row = db.execute('SELECT * FROM products WHERE store_id=? AND id=?', (sid,pid)).fetchone()
+    if not row:
+        raise ApiError('Product not found in your store.', 404)
+    return row
+
+
+def _v2_customer(db, sid, cid):
+    row = db.execute('SELECT * FROM customers WHERE store_id=? AND id=?', (sid,cid)).fetchone()
+    if not row:
+        raise ApiError('Customer not found in your store.', 404)
+    return row
+
+
+@app.get('/api/v2/dashboard')
+def v2_dashboard_data():
+    sid, _, store = _v2_context()
+    db = get_db()
+    prows = db.execute('SELECT * FROM products WHERE store_id=? ORDER BY name', (sid,)).fetchall()
+    customers = db.execute('SELECT * FROM customers WHERE store_id=? ORDER BY name', (sid,)).fetchall()
+    today_sales = db.execute('SELECT quantity,unit_price_cents,unit_cost_cents FROM sales WHERE store_id=? AND sold_at LIKE ?',
+        (sid,today().isoformat()+'%')).fetchall()
+    all_sales = db.execute('SELECT COALESCE(SUM(quantity*unit_price_cents),0) AS total FROM sales WHERE store_id=?', (sid,)).fetchone()
+    low = [product_json(r) for r in prows if r['quantity'] <= r['reorder_level']]
+    return jsonify({'store': {'id':sid,'name':store['name'],'role':store['role']},
+        'product_count':len(prows),'low_stock':low,'customer_count':len(customers),
+        'outstanding':sum(r['balance_cents'] for r in customers)/100,
+        'today_sales':sum(r['quantity']*r['unit_price_cents'] for r in today_sales)/100,
+        'today_transactions':len(today_sales),
+        'today_profit_known':sum(r['quantity']*(r['unit_price_cents']-r['unit_cost_cents']) for r in today_sales if r['unit_cost_cents'] is not None)/100,
+        'today_profit_complete':all(r['unit_cost_cents'] is not None for r in today_sales),
+        'total_cash_sales':all_sales['total']/100})
+
+
+@app.get('/api/v2/products')
+def v2_products():
+    sid,_,_= _v2_context()
+    return jsonify([product_json(r) for r in get_db().execute('SELECT * FROM products WHERE store_id=? ORDER BY name', (sid,)).fetchall()])
+
+
+@app.post('/api/v2/products')
+def v2_add_product():
+    sid,_,_=_v2_context()
+    d=request.get_json(silent=True) or {}
+    pid=text_field(d,'id','Product ID',30)
+    if not re.fullmatch(r'[\w.\-]+',pid):
+        raise ApiError('Invalid product ID.')
+    name=text_field(d,'name','Name',80)
+    category=text_field(d,'category','Category',40,required=False)
+    price=parse_money(d.get('price'),'Price',allow_zero=True)
+    cost=parse_money(d.get('cost'),'Purchase cost',allow_zero=True) if str(d.get('cost','')).strip() else None
+    qty=parse_int(d.get('quantity'),'Quantity')
+    reorder=parse_int(d.get('reorder_level',10),'Reorder level')
+    exp=text_field(d,'expiration','Expiration date',10,required=False) or None
+    if exp:
+        try: date.fromisoformat(exp)
+        except ValueError: raise ApiError('Invalid expiration date.')
+    try:
+        with write_tx() as db:
+            db.execute('INSERT INTO products (store_id,id,name,category,price_cents,cost_cents,quantity,reorder_level,expiration) VALUES (?,?,?,?,?,?,?,?,?)',
+                (sid,pid,name,category,price,cost,qty,reorder,exp))
+    except Exception as exc:
+        if 'duplicate key' in str(exc).lower(): raise ApiError('Product ID already exists in your store.',409)
+        raise
+    return jsonify(product_json(_v2_product(get_db(),sid,pid))),201
+
+
+@app.post('/api/v2/products/<pid>/restock')
+def v2_restock(pid):
+    sid,_,_=_v2_context()
+    qty=parse_int((request.get_json(silent=True) or {}).get('quantity'),'Quantity',1)
+    with write_tx() as db:
+        result=db.execute('UPDATE products SET quantity=quantity+? WHERE store_id=? AND id=?', (qty,sid,pid))
+        if result.rowcount != 1: raise ApiError('Product not found.',404)
+    return jsonify(product_json(_v2_product(get_db(),sid,pid)))
+
+
+@app.post('/api/v2/sales')
+def v2_sale():
+    sid,uid,_=_v2_context()
+    d=request.get_json(silent=True) or {}
+    qty=parse_int(d.get('quantity'),'Quantity',1)
+    pid=str(d.get('product_id','')).strip()
+    with write_tx() as db:
+        product=_v2_product(db,sid,pid)
+        result=db.execute('UPDATE products SET quantity=quantity-? WHERE store_id=? AND id=? AND quantity>=?',(qty,sid,pid,qty))
+        if result.rowcount != 1: raise ApiError('Insufficient stock.',400)
+        db.execute('INSERT INTO sales (store_id,product_id,product_name,quantity,unit_price_cents,unit_cost_cents,sold_at,username) VALUES (?,?,?,?,?,?,?,?)',
+            (sid,pid,product['name'],qty,product['price_cents'],product['cost_cents'],now().isoformat(timespec='seconds'),uid))
+    return jsonify({'ok':True,'total':qty*product['price_cents']/100})
+
+
+@app.get('/api/v2/customers')
+def v2_customers():
+    sid,_,_=_v2_context()
+    return jsonify([customer_json(r) for r in get_db().execute('SELECT * FROM customers WHERE store_id=? ORDER BY name',(sid,)).fetchall()])
+
+
+@app.post('/api/v2/customers')
+def v2_add_customer():
+    sid,_,_=_v2_context()
+    d=request.get_json(silent=True) or {}
+    cid=text_field(d,'id','Customer ID',30)
+    if not re.fullmatch(r'[\w.\-]+',cid): raise ApiError('Invalid customer ID.')
+    name=text_field(d,'name','Customer name',80)
+    contact=text_field(d,'contact','Contact',40,required=False)
+    try:
+        with write_tx() as db:
+            db.execute('INSERT INTO customers(store_id,id,name,contact,balance_cents) VALUES (?,?,?,?,0)',(sid,cid,name,contact))
+    except Exception as exc:
+        if 'duplicate key' in str(exc).lower(): raise ApiError('Customer ID already exists in your store.',409)
+        raise
+    return jsonify(customer_json(_v2_customer(get_db(),sid,cid))),201
+
+
+@app.post('/api/v2/customers/<cid>/charge')
+def v2_charge(cid):
+    sid,uid,_=_v2_context()
+    d=request.get_json(silent=True) or {}
+    pid=str(d.get('product_id','')).strip()
+    qty=parse_int(d.get('quantity'),'Quantity',1)
+    with write_tx() as db:
+        customer=_v2_customer(db,sid,cid)
+        product=_v2_product(db,sid,pid)
+        result=db.execute('UPDATE products SET quantity=quantity-? WHERE store_id=? AND id=? AND quantity>=?',(qty,sid,pid,qty))
+        if result.rowcount != 1: raise ApiError('Insufficient stock.',400)
+        amount=qty*product['price_cents']
+        db.execute('UPDATE customers SET balance_cents=balance_cents+? WHERE store_id=? AND id=?',(amount,sid,cid))
+        db.execute('INSERT INTO credit_tx(store_id,customer_id,tx_type,amount_cents,description,tx_at,username) VALUES (?,?,?,?,?,?,?)',
+            (sid,cid,'CHARGE',amount,f'{qty} x {product["name"]}',now().isoformat(timespec='seconds'),uid))
+    return jsonify({'ok':True,'amount':amount/100})
+
+
+@app.post('/api/v2/customers/<cid>/payment')
+def v2_payment(cid):
+    sid,uid,_=_v2_context()
+    amount=parse_money((request.get_json(silent=True) or {}).get('amount'),'Payment')
+    with write_tx() as db:
+        _v2_customer(db,sid,cid)
+        result=db.execute('UPDATE customers SET balance_cents=balance_cents-? WHERE store_id=? AND id=? AND balance_cents>=?',(amount,sid,cid,amount))
+        if result.rowcount != 1: raise ApiError('Payment exceeds balance.',400)
+        db.execute('INSERT INTO credit_tx(store_id,customer_id,tx_type,amount_cents,description,tx_at,username) VALUES (?,?,?,?,?,?,?)',
+            (sid,cid,'PAYMENT',amount,'Payment received',now().isoformat(timespec='seconds'),uid))
+    return jsonify({'ok':True,'amount':amount/100})
+
+
+@app.get('/api/v2/customers/<cid>/ledger')
+def v2_ledger(cid):
+    sid,_,_=_v2_context()
+    db=get_db()
+    customer=_v2_customer(db,sid,cid)
+    rows=db.execute('SELECT * FROM credit_tx WHERE store_id=? AND customer_id=? ORDER BY id DESC LIMIT 200',(sid,cid)).fetchall()
+    return jsonify({'customer':customer_json(customer),'transactions':[{'type':r['tx_type'],'amount':r['amount_cents']/100,'description':r['description'],'at':r['tx_at']} for r in rows]})
+
+
+@app.get('/api/v2/reports')
+def v2_reports():
+    sid,_,_=_v2_context()
+    db=get_db()
+    sales=db.execute('SELECT product_name,quantity,unit_price_cents,unit_cost_cents,sold_at FROM sales WHERE store_id=? ORDER BY id DESC LIMIT 500',(sid,)).fetchall()
+    return jsonify({'recent_sales':[{'product':r['product_name'],'quantity':r['quantity'],'total':r['quantity']*r['unit_price_cents']/100,'at':r['sold_at']} for r in sales],
+        'note':'Showing the latest 500 cash-sale records for this store.'})
 
 init_db()
 
