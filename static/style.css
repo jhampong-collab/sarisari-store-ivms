@@ -116,3 +116,71 @@ h2.section { font-size: 1rem; margin: 18px 2px 8px; }
 .stock-warning { background: var(--warn-soft); color: var(--warn); margin-bottom: 12px; }
 .export-actions { display: grid; grid-template-columns: 1fr; gap: 8px; }
 .export-actions a { display: block; text-align: center; text-decoration: none; }
+
+/* v1.3 Modern Dark Edition: presentation only; API and data model unchanged */
+:root {
+  color-scheme: dark;
+  --green:#20c787; --green-dark:#0b815a; --green-soft:#163b32;
+  --bg:#0b1110; --card:#17221f; --text:#f0f7f4; --muted:#9aaea6;
+  --line:#2a3c35; --danger:#ff8f91; --danger-soft:#3d2228;
+  --warn:#ffcc76; --warn-soft:#392f1c; --shadow:0 8px 26px rgba(0,0,0,.14);
+}
+body { background:radial-gradient(ellipse at top right, #13271f 0%, #0b1110 40%); letter-spacing:.005em; }
+.topbar { background:rgba(16,28,24,.96); border-bottom:1px solid var(--line); padding:calc(10px + env(safe-area-inset-top)) 18px 10px; backdrop-filter:blur(18px); }
+.brand-mark { width:37px;height:37px;display:grid;place-items:center;border-radius:11px;background:linear-gradient(135deg,#23d293,#0d7653);color:#082219;font-weight:900;font-size:1.2rem; }
+.brand-copy { flex:1;min-width:0;display:flex;flex-direction:column;gap:1px; }
+.topbar .brand-copy h1 { font-size:1.03rem;letter-spacing:.01em;line-height:1.15; }
+.brand-copy>span { color:#8caca0;font-size:.58rem;letter-spacing:.14em;font-weight:800; }
+.topbar .chip { background:#223a30;color:#c8efda;border:1px solid #365347;font-size:.71rem;padding:5px 9px; }
+.icon-btn { color:#c7ead7; }
+main { max-width:1000px;padding:22px 16px calc(var(--nav-h) + 34px + env(safe-area-inset-bottom)); }
+nav.tabs { background:#121e19;border-top:1px solid #30453b;max-width:100%;box-shadow:0 -10px 30px rgba(0,0,0,.18); }
+nav.tabs button { gap:4px;font-size:.7rem;transition:color .15s; }
+nav.tabs button .ico { font-size:1.55rem; }
+nav.tabs button.active { color:#48e0a3; }
+nav.tabs button.active::before { content:"";height:3px;width:28px;background:#3bda9a;border-radius:0 0 5px 5px;position:absolute;top:0; }
+nav.tabs button { position:relative; }
+.card { border-radius:16px;background:linear-gradient(145deg,#1a2822,#15211c);border:1px solid #2a3c33;box-shadow:var(--shadow);padding:17px; }
+.card:focus-visible,.btn:focus-visible,nav.tabs button:focus-visible { outline:2px solid #50e9b0;outline-offset:2px; }
+.btn { border-radius:11px;background:#21352b;border-color:#355244; }
+.btn-primary { background:#1bb879;border-color:#1bb879;color:#08291b; }
+.input { background:#13211b;border-color:#355044; }
+.input:focus { outline-color:#28c98a; }
+.badge.ok { color:#7ce8b6; }
+.total { color:#70e3ae; }
+.auth h1 { color:#5fe0a6; }
+.role-chip { color:#78e6b1; }
+.page-heading { margin:3px 1px 19px; }
+.page-heading h2 { font-size:clamp(1.45rem,4vw,2rem);letter-spacing:-.035em;margin:4px 0 5px;line-height:1.2; }
+.page-heading p { font-size:.89rem; }
+.eyebrow { color:#5ddfa9;font-size:.67rem;letter-spacing:.17em;font-weight:800; }
+h2.section { font-size:1.04rem;letter-spacing:-.02em;margin:22px 2px 11px; }
+.hero-metric { border:1px solid #277d59;background:linear-gradient(115deg,#13583e,#0b3025 78%);border-radius:20px;padding:24px;display:flex;flex-direction:column;gap:8px;box-shadow:0 12px 30px rgba(0,0,0,.17); }
+.hero-metric>span { font-size:.73rem;color:#b8e6cd;letter-spacing:.13em;font-weight:700; }
+.hero-metric strong { font-size:clamp(2rem,7vw,3.3rem);line-height:1.15;letter-spacing:-.055em; }
+.hero-metric small { color:#c0e3d0; }
+.metrics-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:11px;margin-top:13px; }
+.metric { min-height:126px;display:flex;flex-direction:column;justify-content:space-between; }
+.metric-top { display:flex;justify-content:space-between;align-items:flex-start;gap:8px;color:#a5bdb1;font-size:.76rem; }
+.metric-icon { background:#263c30;color:#78ddb0;display:grid;place-items:center;border-radius:10px;min-width:30px;height:30px;font-size:1.1rem;font-weight:700; }
+.metric-value { font-size:clamp(1.3rem,3vw,1.9rem);font-weight:800;letter-spacing:-.045em;overflow-wrap:anywhere; }
+.metric.profit .metric-value { color:#71e4ab; }
+.metric.credit-metric .metric-value { color:#ffcf91; }
+.metric.attention .metric-value { color:#ffcf91; }
+.notice-compact { display:flex;align-items:flex-start;gap:9px;color:#e8c78d;background:#33291b;border:1px solid #58452b;padding:12px 14px;border-radius:12px;margin-top:13px;font-size:.82rem; }
+.quick-grid { display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px; }
+.quick-action { text-align:left;display:flex;align-items:center;gap:9px;min-height:66px;padding:12px;background:#192921;border:1px solid #2e473a;color:#edf8f0;border-radius:13px;font:inherit;font-size:.85rem;font-weight:650;cursor:pointer; }
+.quick-icon { display:grid;place-items:center;width:33px;height:33px;border-radius:9px;background:#214b37;color:#6de4a9;font-size:1.2rem;flex-shrink:0; }
+.quick-arrow { margin-left:auto;color:#6ee4ab; }
+.low-panel { margin-top:20px; }
+.low-panel .row+.row { border-top:1px solid var(--line);padding-top:10px;margin-top:10px; }
+.link-button { border:0;background:transparent;color:#78e8b2;font:inherit;font-size:.78rem;cursor:pointer; }
+.sell-item { display:flex;align-items:center;gap:12px; }
+.sell-item>div { flex:1;min-width:0; }
+.sell-price { color:#6ce1a7;font-weight:800;white-space:nowrap; }
+.sell-plus { width:29px;height:29px;border-radius:8px;display:grid;place-items:center;background:#246144;color:#d1f9e5;font-weight:900; }
+.stats .stat.wide { background:linear-gradient(115deg,#164934,#172920);border-color:#32734f; }
+.stat .value { font-size:1.5rem;letter-spacing:-.03em; }
+.export-actions a { color:#b9f1d4; }
+@media(min-width:800px) { main {padding:28px 30px 40px;} nav.tabs { position:sticky;top:58px;bottom:auto;order:0;border-top:0;border-bottom:1px solid var(--line);justify-content:center; } nav.tabs button { max-width:145px; } .shell {display:flex;flex-direction:column;} .shell main {order:1;} .metrics-grid {grid-template-columns:repeat(4,minmax(0,1fr));} .quick-grid {grid-template-columns:repeat(4,minmax(0,1fr));} .export-actions {grid-template-columns:repeat(3,minmax(0,1fr));} }
+@media(max-width:360px) { .brand-copy>span {display:none;} .topbar .chip {max-width:95px;overflow:hidden;text-overflow:ellipsis;} .metric {min-height:112px;padding:12px;} .quick-action {padding:9px;gap:6px;} }
