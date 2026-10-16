@@ -4,7 +4,7 @@
    so a product or customer name can never run as code. */
 
 const CLIENT_VERSION = document.documentElement.dataset.version;
-const S = { me: null, tab: "products", reg: null, products: [] };
+const S = { me: null, tab: "dashboard", reg: null, products: [] };
 
 // ---------------------------------------------------------------- helpers
 function h(tag, attrs, ...children) {
@@ -246,25 +246,81 @@ async function logout() {
 
 // ---------------------------------------------------------------- shell (header, tabs)
 function tabsForRole() {
-  const tabs = [{ id: "products", label: "Products", ico: "\uD83D\uDCE6" }];
-  if (can("credit")) tabs.push({ id: "credit", label: "Credit", ico: "\uD83D\uDCD2" });
-  if (can("reports")) tabs.push({ id: "reports", label: "Reports", ico: "\uD83D\uDCCA" });
-  tabs.push({ id: "more", label: "More", ico: "\u2699\uFE0F" });
+  const tabs = [];
+  if (can("reports")) tabs.push({ id: "dashboard", label: "Home", ico: "⌂" });
+  tabs.push({ id: "products", label: "Products", ico: "▣" });
+  if (can("cash_sale")) tabs.push({ id: "sales", label: "Sell", ico: "▤" });
+  if (can("credit")) tabs.push({ id: "credit", label: "Credit", ico: "◫" });
+  if (can("reports")) tabs.push({ id: "reports", label: "Reports", ico: "▥" });
+  tabs.push({ id: "more", label: "More", ico: "⚙" });
   return tabs;
 }
 function shell() {
   const tabs = tabsForRole();
-  if (!tabs.some((t) => t.id === S.tab)) S.tab = "products";
+  if (!tabs.some((t) => t.id === S.tab)) S.tab = tabs[0].id;
   const nav = h("nav", { class: "tabs", "aria-label": "Main" }, tabs.map((t) =>
     h("button", { type: "button", "data-tab": t.id, class: t.id === S.tab ? "active" : "", onclick: () => showTab(t.id) },
-      h("span", { class: "ico", "aria-hidden": "true" }, t.ico), t.label)));
+      h("span", { class: "ico", "aria-hidden": "true" }, t.ico), h("span", {}, t.label))));
   return h("div", { class: "shell" },
     h("header", { class: "topbar" },
-      h("h1", {}, "Sari-Sari Store"),
+      h("div", { class: "brand-mark", "aria-hidden": "true" }, "S"),
+      h("div", { class: "brand-copy" }, h("h1", {}, "Sari-Sari"), h("span", {}, "STORE MANAGER · v1.3")),
       h("span", { class: "pill-offline" }, "Offline"),
-      h("span", { class: "chip" }, `${S.me.username} \u00B7 ${S.me.role}`),
-      h("button", { class: "icon-btn", "aria-label": "Refresh", onclick: () => showTab(S.tab) }, "\u21BB")),
+      h("span", { class: "chip" }, `${S.me.username} · ${S.me.role}`),
+      h("button", { class: "icon-btn", "aria-label": "Refresh", onclick: () => showTab(S.tab) }, "↻")),
     h("main", { id: "view" }), nav);
+}
+function pageHeading(kicker, title, subtitle) {
+  return h("div", { class: "page-heading" }, h("span", { class: "eyebrow" }, kicker),
+    h("h2", {}, title), subtitle && h("p", { class: "muted" }, subtitle));
+}
+function quickAction(label, tab, icon) {
+  return h("button", { class: "quick-action", onclick: () => showTab(tab) },
+    h("span", { class: "quick-icon" }, icon), h("span", {}, label), h("span", { class: "quick-arrow" }, "↗"));
+}
+async function dashboardView() {
+  const [r, products] = await Promise.all([api("/api/reports"), api("/api/products")]);
+  S.products = products;
+  const low = products.filter(p => p.status === "LOW STOCK");
+  const tile = (label, value, ico, cls = "") => h("div", { class: "card metric " + cls },
+    h("div", { class: "metric-top" }, h("span", {}, label), h("span", { class: "metric-icon" }, ico)),
+    h("div", { class: "metric-value" }, value));
+  return h("div", { class: "dashboard" },
+    pageHeading("BUSINESS OVERVIEW", "Good day, " + S.me.username + " 👋", "Your store at a glance"),
+    h("div", { class: "hero-metric" }, h("span", {}, "TODAY'S CASH SALES"),
+      h("strong", {}, peso(r.cash_sales_today)), h("small", {}, `${r.today_transactions} transactions today`)),
+    h("div", { class: "metrics-grid" },
+      tile("Known gross profit", peso(r.today_profit_known), "↗", "profit"),
+      tile("Outstanding credit", peso(r.outstanding), "◫", "credit-metric"),
+      tile("Products", String(products.length), "▣"),
+      tile("Low stock", String(low.length), "!", low.length ? "attention" : "")),
+    !r.today_profit_complete && h("div", { class: "notice-compact" },
+      h("span", {}, "ⓘ"), h("span", {}, `Profit excludes ${r.today_profit_missing_cost_units} sold unit(s) without purchase costs.`)),
+    h("h2", { class: "section" }, "Quick actions"),
+    h("div", { class: "quick-grid" },
+      can("cash_sale") && quickAction("New sale", "sales", "＋"), quickAction("Inventory", "products", "▣"),
+      can("credit") && quickAction("Customer credit", "credit", "◫"), quickAction("Reports", "reports", "▥")),
+    low.length && h("div", { class: "card low-panel" },
+      h("div", { class: "row" }, h("strong", {}, "⚠ Restock soon"),
+        h("button", { class: "link-button", onclick: () => showTab("products") }, "View products →")),
+      ...low.slice(0, 3).map(p => h("div", { class: "row low-line" },
+        h("span", {}, p.name), h("span", { class: "badge low" }, `${p.quantity} left`)))));
+}
+async function salesView() {
+  const products = await api("/api/products");
+  S.products = products;
+  const list = h("div", { class: "list" });
+  const search = h("input", { class: "input", type: "search", placeholder: "Find a product to sell…", "aria-label": "Find product to sell" });
+  const paint = () => {
+    const q = search.value.trim().toLowerCase();
+    const rows = products.filter(p => p.quantity > 0 && (!q || [p.name,p.id,p.category].some(v => String(v || "").toLowerCase().includes(q))));
+    list.replaceChildren(...(rows.length ? rows.map(p => h("button", { class: "card sell-item", onclick: () => openSell(p) },
+      h("div", {}, h("strong", {}, p.name), h("div", { class: "muted small" }, `${p.quantity} in stock · ${p.category || "General"}`)),
+      h("span", { class: "sell-price" }, peso(p.price)), h("span", { class: "sell-plus" }, "+"))) : [empty("No available products found.")]));
+  };
+  search.addEventListener("input", paint); paint();
+  return h("div", {}, pageHeading("CHECKOUT", "New sale", "Choose a product to record a cash sale"),
+    h("div", { class: "toolbar" }, search), list);
 }
 async function showTab(id) {
   S.tab = id;
@@ -302,7 +358,7 @@ async function productsView() {
   const warning = low.length ? h("div", { class: "card stock-warning" },
     h("div", { class: "strong" }, `⚠ ${low.length} product(s) need restocking`),
     h("div", { class: "small" }, low.slice(0, 5).map((p) => `${p.name}: ${p.quantity} left`).join(" · "))) : null;
-  return h("div", {}, warning, h("div", { class: "toolbar" }, search,
+  return h("div", {}, pageHeading("INVENTORY", "Products", "Manage stock, prices and product details"), warning, h("div", { class: "toolbar" }, search,
     can("add_product") && h("button", { class: "btn btn-primary", onclick: openAddProduct }, "+ Add")), list);
 }
 function productCard(p) {
@@ -466,7 +522,7 @@ async function reportsView() {
   const section = (title, rows, render) => [h("h2", { class: "section" }, title),
     h("div", { class: "list" }, rows.length ? rows.map(render) : [empty("Nothing to show.")])];
   const line = (left, right, cls) => h("div", { class: "card row" }, h("span", {}, left), h("span", { class: "strong " + (cls || "") }, right));
-  return h("div", {},
+  return h("div", {}, pageHeading("ANALYTICS", "Reports", "Sales performance and downloadable records"),
     h("div", { class: "stats" },
       stat("Cash sales today", peso(r.cash_sales_today), "", true),
       stat("Sales transactions today", String(r.today_transactions)),
@@ -497,7 +553,7 @@ async function moreView() {
     h("button", { class: "btn btn-block", onclick: logout }, "Log out"),
     h("p", { class: "muted small center spaced" }, `Sari-Sari Store app \u00B7 version ${CLIENT_VERSION}`),
     h("p", { class: "muted small center" }, "Updates install by themselves. You never need to reinstall."));
-  return h("div", { class: "list" }, items);
+  return h("div", {}, pageHeading("ACCOUNT", "Settings", "Manage your profile and application"), h("div", { class: "list" }, items));
 }
 async function openUsers() {
   try {
@@ -531,7 +587,7 @@ function openEditUser(u, roles) {
     })));
 }
 
-const views = { products: productsView, credit: creditView, reports: reportsView, more: moreView };
+const views = { dashboard: dashboardView, products: productsView, sales: salesView, credit: creditView, reports: reportsView, more: moreView };
 
 // ---------------------------------------------------------------- start
 function offlineView(message) {
