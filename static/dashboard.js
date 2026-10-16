@@ -17,5 +17,34 @@ submit('product-form',d=>api('products','POST',d));submit('sale-form',async d=>{
 $('credit-kind').onchange=()=>{const payment=$('credit-kind').value==='payment';$('charge-field').hidden=payment;$('quantity-field').hidden=payment;$('payment-field').hidden=!payment};
 async function report(){const d=await api('reports');const body=$('report-rows');body.replaceChildren();d.recent_sales.forEach(s=>{const tr=document.createElement('tr');cell(tr,s.product);cell(tr,s.quantity);cell(tr,money(s.total));cell(tr,s.at);body.append(tr)})}
 function show(tab){document.querySelectorAll('.pane').forEach(p=>p.hidden=p.id!==tab);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));if(tab==='reports')report().catch(e=>msg(e.message));}
-document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>show(b.dataset.tab));$('logout').onclick=()=>{sessionStorage.removeItem('sari_v2_test_token');location.replace('/')};
+document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>show(b.dataset.tab));// Clear local session and ask Supabase to revoke this access token.
+async function signOut(){
+  const current=sessionStorage.getItem('sari_v2_test_token');
+  sessionStorage.removeItem('sari_v2_test_token');
+  try{
+    const r=await fetch('/api/v2/config');
+    const cfg=await r.json();
+    if(current && cfg.url && cfg.key){
+      await fetch(cfg.url.replace(/\/$/,'')+'/auth/v1/logout',{method:'POST',
+        headers:{'apikey':cfg.key,'Authorization':'Bearer '+current}});
+    }
+  }catch(_e){/* Local logout still completes if offline. */}
+  location.replace('/');
+}
+$('logout').onclick=signOut;
+$('mobile-logout').onclick=signOut;
+const THEME_KEY='intensity_v2_theme';
+function applyTheme(theme){
+  const dark=theme==='dark';
+  document.documentElement.dataset.theme=dark?'dark':'light';
+  const btn=$('theme-toggle');
+  btn.innerHTML=dark?'☀ <span>Light mode</span>':'☾ <span>Dark mode</span>';
+  btn.setAttribute('aria-label',dark?'Switch to light mode':'Switch to dark mode');
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content',dark?'#0b1426':'#f5f8fe');
+}
+applyTheme(localStorage.getItem(THEME_KEY)==='dark'?'dark':'light');
+$('theme-toggle').onclick=()=>{
+  const next=document.documentElement.dataset.theme==='dark'?'light':'dark';
+  localStorage.setItem(THEME_KEY,next);applyTheme(next);
+};
 load().catch(e=>msg(e.message));
