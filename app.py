@@ -1163,7 +1163,7 @@ def v2_products():
 
 @app.post('/api/v2/products')
 def v2_add_product():
-    sid,_,_=_v2_require('owner','manager')
+    sid,_,_=_v2_require('owner','manager','cashier')
     d=request.get_json(silent=True) or {}
     pid=text_field(d,'id','Product ID',30)
     if not re.fullmatch(r'[\w.\-]+',pid):
@@ -1190,7 +1190,7 @@ def v2_add_product():
 
 @app.post('/api/v2/products/<pid>/restock')
 def v2_restock(pid):
-    sid,_,_=_v2_require('owner','manager')
+    sid,_,_=_v2_require('owner','manager','cashier')
     qty=parse_int((request.get_json(silent=True) or {}).get('quantity'),'Quantity',1)
     with write_tx() as db:
         result=db.execute('UPDATE products SET quantity=quantity+? WHERE store_id=? AND id=?', (qty,sid,pid))
