@@ -18,7 +18,20 @@ async function init(){cfg=await request('/api/v2/config');if(!cfg.url||!cfg.key)
 }
 async function auth(path,body){const r=await fetch(cfg.url+'/auth/v1/'+path+(path==='signup'?'?redirect_to='+encodeURIComponent(isStaff?invitationRedirect:location.origin+'/'):''),{method:'POST',headers:{'apikey':cfg.key,'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.msg||j.error_description||j.error||'Authentication failed');return j;}
 $('signup').onclick=async()=>{try{if(!$('store').value.trim()||!$('name').value.trim())throw Error('Enter store name and owner name.');if($('password').value.length<10)throw Error('Use at least 10 password characters.');await auth('signup',{email:$('email').value.trim(),password:$('password').value,data:{store_name:$('store').value.trim(),full_name:$('name').value.trim()},options:{email_redirect_to:location.origin+'/'} });message('Check your email for the verification link. After verification, return here and sign in.');}catch(e){message(e.message)}};
-$('signin').onclick=async()=>{try{const j=await auth('token?grant_type=password',{email:$('email').value.trim(),password:$('password').value});if(!j.access_token)throw Error('Sign in failed. Verify your email first.');token=j.access_token;sessionStorage.setItem('sari_v2_test_token',token);message('Signed in. Checking your store…');if(isStaff){await acceptStaff();return;}try{const a=await request('/api/v2/account','GET',null,true);if(a.store){location.assign('/dashboard');return;}}catch(e){message('Account check failed: '+e.message);return;}message('Click Activate my verified store.');}catch(e){message(e.message)}};
+$('signin').onclick=async()=>{try{const j=await auth('token?grant_type=password',{email:$('email').value.trim(),password:$('password').value});if(!j.access_token)throw Error('Sign in failed. Verify your email first.');token=j.access_token;sessionStorage.setItem('sari_v2_test_token',token);message('Signed in. Checking your store…');if(isStaff){await acceptStaff();return;}
+ // Check platform privileges before requiring store membership.
+ // Only a verified platform admin can enter the separate admin workspace.
+ try {
+   await request('/api/v2/admin/check','GET',null,true);
+   location.assign('/admin');
+   return;
+ } catch (e) {
+   if (!/Super Admin access required/i.test(e.message)) {
+     message('Admin access check failed: '+e.message);
+     return;
+   }
+ }
+ try{const a=await request('/api/v2/account','GET',null,true);if(a.store){location.assign('/dashboard');return;}}catch(e){message('Account check failed: '+e.message);return;}message('Click Activate my verified store.');}catch(e){message(e.message)}};
 $('activate').onclick=async()=>{try{if(!token)throw Error('Please sign in first.');const j=await request('/api/v2/provision','POST',{},true);message(j.message+'\nStore ID: '+j.store_id);location.assign('/dashboard');}catch(e){message(e.message)}};
 $('signout').onclick=()=>{token=null;sessionStorage.removeItem('sari_v2_test_token');message('Signed out locally.')};
 init().catch(e=>message(e.message));

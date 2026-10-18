@@ -948,6 +948,11 @@ def v2_dashboard():
     return send_from_directory(STATIC_DIR, 'dashboard.html')
 
 
+@app.get('/admin')
+def v2_admin_page():
+    return send_from_directory(STATIC_DIR, 'admin.html')
+
+
 @app.get('/api/v2/config')
 def v2_config():
     return jsonify({'url': os.environ.get('SUPABASE_URL','').rstrip('/'), 'key': os.environ.get('SUPABASE_PUBLISHABLE_KEY','')})
