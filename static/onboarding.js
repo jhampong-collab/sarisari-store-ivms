@@ -18,7 +18,7 @@ async function init(){cfg=await request('/api/v2/config');if(!cfg.url||!cfg.key)
 }
 async function auth(path,body){const r=await fetch(cfg.url+'/auth/v1/'+path+(path==='signup'?'?redirect_to='+encodeURIComponent(isStaff?invitationRedirect:location.origin+'/'):''),{method:'POST',headers:{'apikey':cfg.key,'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.msg||j.error_description||j.error||'Authentication failed');return j;}
 $('signup').onclick=async()=>{try{if(!$('store').value.trim()||!$('name').value.trim())throw Error('Enter store name and owner name.');if($('password').value.length<10)throw Error('Use at least 10 password characters.');await auth('signup',{email:$('email').value.trim(),password:$('password').value,data:{store_name:$('store').value.trim(),full_name:$('name').value.trim()},options:{email_redirect_to:location.origin+'/'} });message('Check your email for the verification link. After verification, return here and sign in.');}catch(e){message(e.message)}};
-$('signin').onclick=async()=>{try{const j=await auth('token?grant_type=password',{email:$('email').value.trim(),password:$('password').value});if(!j.access_token)throw Error('Sign in failed. Verify your email first.');token=j.access_token;sessionStorage.setItem('sari_v2_test_token',token);message('Signed in. Checking your store…');try{const a=await request('/api/v2/account','GET',null,true);if(isStaff){await acceptStaff();return;}if(a.store){location.assign('/dashboard');return;}}catch(e){}message(isStaff?'Signed in. Accepting your staff invitation…':'Click Activate my verified store.');}catch(e){message(e.message)}};
+$('signin').onclick=async()=>{try{const j=await auth('token?grant_type=password',{email:$('email').value.trim(),password:$('password').value});if(!j.access_token)throw Error('Sign in failed. Verify your email first.');token=j.access_token;sessionStorage.setItem('sari_v2_test_token',token);message('Signed in. Checking your store…');if(isStaff){await acceptStaff();return;}try{const a=await request('/api/v2/account','GET',null,true);if(a.store){location.assign('/dashboard');return;}}catch(e){message('Account check failed: '+e.message);return;}message('Click Activate my verified store.');}catch(e){message(e.message)}};
 $('activate').onclick=async()=>{try{if(!token)throw Error('Please sign in first.');const j=await request('/api/v2/provision','POST',{},true);message(j.message+'\nStore ID: '+j.store_id);location.assign('/dashboard');}catch(e){message(e.message)}};
 $('signout').onclick=()=>{token=null;sessionStorage.removeItem('sari_v2_test_token');message('Signed out locally.')};
 init().catch(e=>message(e.message));
@@ -28,8 +28,6 @@ const showMode=mode=>{const reg=mode==='register';$('register-fields').hidden=!r
 $('tab-login').onclick=()=>showMode('login');$('tab-register').onclick=()=>showMode('register');$('toggle-password').onclick=()=>{const input=$('password');input.type=input.type==='password'?'text':'password';$('toggle-password').textContent=input.type==='password'?'Show':'Hide';};
 const oldMessage=message;message=t=>{oldMessage(t);if(/Signed in|Email confirmed/.test(t)){$('activate').hidden=isStaff;$('signout').hidden=false;}if(/Store account activated/.test(t)){$('activate').hidden=true;$('signout').hidden=false;}if(/Signed out/.test(t)){$('activate').hidden=true;$('signout').hidden=true;}};
 showMode('login');
-
-$('staff-accept').onclick=async()=>{try{if(!token)throw Error('Sign in first with the invited email.');const id=$('staff-invite-id').value.trim();const j=await request('/api/v2/staff/accept','POST',{invitation_id:id},true);message(j.message);location.assign('/dashboard')}catch(e){message(e.message)}};
 
 // Step 7B.5: link-based staff onboarding. Never provision a new store for staff.
 async function acceptStaff(){
@@ -44,6 +42,7 @@ $('staff-signup').onclick=async()=>{
     if($('password').value.length<10)throw Error('Use at least 10 password characters.');
     const email=$('email').value.trim();
     if(!email)throw Error('Enter your invited email.');
+    message('Creating staff account…');
     await auth('signup',{email,password:$('password').value,
       data:{full_name:email.split('@')[0]},
       options:{email_redirect_to:invitationRedirect}});
@@ -51,7 +50,6 @@ $('staff-signup').onclick=async()=>{
   }catch(e){message(e.message)}
 };
 if(isStaff){
-  $('staff-accept-box').hidden=true;
   $('activate').hidden=true;
   $('heading').textContent='Staff sign in';
   $('subtitle').textContent='Use your invited email to join your assigned store.';
