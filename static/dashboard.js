@@ -42,7 +42,41 @@ function inventoryFilteredProducts(){
  return filtered;
 }
 ['inventory-search','inventory-category','inventory-stock','inventory-sort'].forEach(id=>$(id).addEventListener('input',renderProducts));
-function renderProducts(){const filtered=inventoryFilteredProducts();$('inventory-count').textContent=`Showing ${filtered.length} of ${products.length} products`;$('inventory-empty').hidden=filtered.length!==0;const body=$('product-rows');body.replaceChildren();filtered.forEach(p=>{const tr=document.createElement('tr');cell(tr,p.id);cell(tr,p.name);cell(tr,money(p.price));cell(tr,p.quantity);cell(tr,p.status);const td=document.createElement('td'),b=document.createElement('button');b.textContent='+ Stock';b.onclick=async()=>{const v=prompt('How many units to add to '+p.name+'?');if(v===null)return;try{await api('products/'+encodeURIComponent(p.id)+'/restock','POST',{quantity:Number(v)});await load();msg('Stock updated.')}catch(e){msg(e.message)}};td.append(b);tr.append(td);const editTd=document.createElement('td'),edit=document.createElement('button');edit.textContent='Edit';edit.onclick=()=>openProductEdit(p);editTd.append(edit);tr.append(editTd);body.append(tr)});}
+function renderProducts(){const filtered=inventoryFilteredProducts();$('inventory-count').textContent=`Showing ${filtered.length} of ${products.length} products`;$('inventory-empty').hidden=filtered.length!==0;const body=$('product-rows');body.replaceChildren();filtered.forEach(p=>{const tr=document.createElement('tr');cell(tr,p.id);cell(tr,p.name);cell(tr,money(p.price));cell(tr,p.quantity);cell(tr,p.status);const td=document.createElement('td'),b=document.createElement('button');b.textContent='+ Stock';b.onclick=async()=>{const v=prompt('How many units to add to '+p.name+'?');if(v===null)return;try{await api('products/'+encodeURIComponent(p.id)+'/restock','POST',{quantity:Number(v)});await load();msg('Stock updated.')}catch(e){msg(e.message)}};td.append(b);if(currentRole==='owner'||currentRole==='manager'){const adjust=document.createElement('button');adjust.type='button';adjust.textContent='Adjust stock';adjust.className='adjust-stock-action';adjust.onclick=()=>openStockAdjustment(p);td.append(adjust);}tr.append(td);const editTd=document.createElement('td'),edit=document.createElement('button');edit.textContent='Edit';edit.onclick=()=>openProductEdit(p);editTd.append(edit);tr.append(editTd);body.append(tr)});}
+function openStockAdjustment(p){
+ if(currentRole!=='owner'&&currentRole!=='manager'){msg('Only Owners and Managers can adjust stock.');return;}
+ const form=$('adjust-stock-form');
+ form.dataset.productId=p.id;
+ $('adjust-stock-product').textContent=p.id+' — '+p.name;
+ $('adjust-stock-current').value=p.quantity;
+ form.elements.namedItem('new_quantity').value=p.quantity;
+ form.elements.namedItem('reason').value='';
+ $('adjust-stock-panel').hidden=false;
+ $('adjust-stock-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+$('cancel-stock-adjust').onclick=()=>{$('adjust-stock-panel').hidden=true;};
+$('adjust-stock-form').onsubmit=async e=>{
+ e.preventDefault();
+ const form=e.currentTarget;
+ const pid=form.dataset.productId;
+ const newQty=Number(form.elements.namedItem('new_quantity').value);
+ const before=Number($('adjust-stock-current').value);
+ const reason=form.elements.namedItem('reason').value.trim();
+ if(!Number.isSafeInteger(newQty)||newQty<0){msg('New stock must be a non-negative whole number.');return;}
+ if(newQty===before){msg('New quantity must differ from current stock.');return;}
+ if(!reason||reason.length>500){msg('Enter an adjustment reason (up to 500 characters).');return;}
+ const difference=newQty-before;
+ if(!confirm(`Adjust ${pid} from ${before} to ${newQty} (${difference>0?'+':''}${difference})?\nReason: ${reason}`))return;
+ const button=$('adjust-stock-submit');button.disabled=true;
+ try{
+  await api('products/'+encodeURIComponent(pid)+'/adjust','POST',{new_quantity:newQty,reason});
+  $('adjust-stock-panel').hidden=true;
+  await load();
+  if(!$('history').hidden)await loadHistory();
+  msg('Stock adjustment saved and recorded in Inventory History.');
+ }catch(err){msg(err.message);$('alert').scrollIntoView({behavior:'smooth',block:'nearest'});}
+ finally{button.disabled=false;}
+};
 function openProductEdit(p){
   const form=$('edit-product-form');
   form.elements.namedItem('name').value=p.name;
