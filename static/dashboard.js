@@ -88,7 +88,17 @@ function renderHistory(){
  const rows=historyMovements.filter(m=>{
   const name=String(m.product_name||'').toLocaleLowerCase();
   const pid=String(m.product_id||'').toLocaleLowerCase();
-  const day=String(m.created_at||'').slice(0,10);
+
+const timestamp = new Date(m.created_at);
+const day = Number.isNaN(timestamp.getTime())
+  ? ''
+  : new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'Asia/Manila',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit'
+    }).format(timestamp);
+
   return (!search||name.includes(search)||pid.includes(search))&&
    (!type||m.movement_type===type)&&(!from||day>=from)&&(!to||day<=to);
  });
@@ -98,7 +108,7 @@ function renderHistory(){
  rows.forEach(m=>{
   const tr=document.createElement('tr');
   const date=new Date(m.created_at);
-  cell(tr,Number.isNaN(date.getTime())?m.created_at:date.toLocaleString('en-PH'));
+  cell(tr,Number.isNaN(date.getTime())?m.created_at:date.toLocaleString('en-PH', {timeZone:'Asia/Manila'}));
   cell(tr,`${m.product_id} — ${m.product_name}`);
   cell(tr,({STOCK_IN:'Stock in',STOCK_OUT:'Stock out',ADJUSTMENT:'Adjustment'})[m.movement_type]||m.movement_type);
   cell(tr,m.quantity_before);
