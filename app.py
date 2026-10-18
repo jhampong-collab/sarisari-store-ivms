@@ -1219,12 +1219,26 @@ def v2_edit_product(pid):
 
 @app.post('/api/v2/products/<pid>/restock')
 def v2_restock(pid):
-    sid,_,_=_v2_require('owner','manager','cashier')
-    qty=parse_int((request.get_json(silent=True) or {}).get('quantity'),'Quantity',1)
+    sid, uid, _ = _v2_require('owner', 'manager', 'cashier')
+    qty = parse_int((request.get_json(silent=True) or {}).get('quantity'), 'Quantity', 1)
     with write_tx() as db:
-        result=db.execute('UPDATE products SET quantity=quantity+? WHERE store_id=? AND id=?', (qty,sid,pid))
-        if result.rowcount != 1: raise ApiError('Product not found.',404)
-    return jsonify(product_json(_v2_product(get_db(),sid,pid)))
+        product = _v2_product(db, sid, pid)
+        before = int(product['quantity'])
+        after = before + qty
+        result = db.execute(
+            'UPDATE products SET quantity=? WHERE store_id=? AND id=?',
+            (after, sid, pid)
+        )
+        if result.rowcount != 1:
+            raise ApiError('Product not found.', 404)
+        db.execute(
+            """INSERT INTO inventory_movements
+               (store_id, product_id, movement_type, quantity_change,
+                quantity_before, quantity_after, remarks, performed_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sid, pid, 'STOCK_IN', qty, before, after, 'Product restocked', uid)
+        )
+    return jsonify(product_json(_v2_product(get_db(), sid, pid)))
 
 
 @app.post('/api/v2/sales')
