@@ -80,12 +80,12 @@ async function loadHistory(){
   renderHistory();
  }catch(err){$('history-count').textContent='Could not load history.';throw err;}
 }
-function renderHistory(){
+function filteredHistory(){
  const search=$('history-search').value.trim().toLocaleLowerCase();
  const type=$('history-type').value;
  const from=$('history-from').value;
  const to=$('history-to').value;
- const rows=historyMovements.filter(m=>{
+ return historyMovements.filter(m=>{
   const name=String(m.product_name||'').toLocaleLowerCase();
   const pid=String(m.product_id||'').toLocaleLowerCase();
 
@@ -102,6 +102,9 @@ const day = Number.isNaN(timestamp.getTime())
   return (!search||name.includes(search)||pid.includes(search))&&
    (!type||m.movement_type===type)&&(!from||day>=from)&&(!to||day<=to);
  });
+}
+function renderHistory(){
+ const rows=filteredHistory();
  $('history-count').textContent=`Showing ${rows.length} of ${historyMovements.length} recent transactions`;
  $('history-empty').hidden=rows.length!==0;
  const body=$('history-rows');body.replaceChildren();
@@ -116,6 +119,31 @@ const day = Number.isNaN(timestamp.getTime())
   cell(tr,m.quantity_after);cell(tr,m.performed_by||'—');cell(tr,m.remarks||'—');body.append(tr);
  });
 }
+// Export only rows already authorized by the store-scoped history API.
+// Escape CSV fields and neutralize spreadsheet formulas in user-controlled text.
+function historyCsvCell(value){
+ let text=String(value??'');
+ if (/^[\s\uFEFF]*[=+@\-]/.test(text)) text="'"+text;
+ return '"'+text.replace(/"/g,'""')+'"';
+}
+function exportHistoryCsv(){
+ const rows=filteredHistory();
+ if(!rows.length){msg('No matching inventory transactions to export.');return;}
+ const headers=['Date / Time (Philippines)','Product ID','Product Name','Transaction Type','Quantity Before','Quantity Change','Quantity After','Performed By (User ID)','Remarks'];
+ const csvRows=rows.map(m=>{
+  const date=new Date(m.created_at);
+  const localDate=Number.isNaN(date.getTime())?String(m.created_at||''):date.toLocaleString('en-PH',{timeZone:'Asia/Manila'});
+  return [localDate,m.product_id,m.product_name,m.movement_type,m.quantity_before,m.quantity_change,m.quantity_after,m.performed_by||'',m.remarks||''];
+ });
+ const content='\uFEFF'+[headers,...csvRows].map(row=>row.map(historyCsvCell).join(',')).join('\r\n')+'\r\n';
+ const url=URL.createObjectURL(new Blob([content],{type:'text/csv;charset=utf-8;'}));
+ const link=document.createElement('a');link.href=url;
+ const date=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+ link.download=`intensity-inventory-history-${date}.csv`;
+ document.body.appendChild(link);link.click();link.remove();
+ setTimeout(()=>URL.revokeObjectURL(url),1000);
+}
+$('history-export').onclick=exportHistoryCsv;
 ['history-search','history-type','history-from','history-to'].forEach(id=>$(id).addEventListener('input',renderHistory));
 $('history-refresh').onclick=()=>loadHistory().catch(e=>msg(e.message));
 function show(tab){document.querySelectorAll('.pane').forEach(p=>p.hidden=p.id!==tab);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));if(tab==='reports')report().catch(e=>msg(e.message));if(tab==='staff')loadStaff().catch(e=>msg(e.message));if(tab==='history')loadHistory().catch(e=>msg(e.message));}
