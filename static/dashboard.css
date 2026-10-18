@@ -33,3 +33,11 @@
 }
 
 .staff-row{display:flex;align-items:center;flex-wrap:wrap;gap:10px;padding:12px 0;border-bottom:1px solid #ccd7e5;overflow-wrap:anywhere}.staff-row span{flex:1;min-width:170px}.staff-row button{padding:8px 12px;border-radius:8px} :root[data-theme='dark'] .staff-row{border-color:#30425e}
+
+/* Inventory search and filter controls — v2 test only */
+.inventory-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:14px 0}
+.inventory-controls label{display:flex;flex-direction:column;gap:6px;font-size:.85rem;font-weight:600}
+.inventory-controls input,.inventory-controls select{width:100%;min-width:0;box-sizing:border-box;padding:10px;border:1px solid #c4cedd;border-radius:8px;background:var(--surface,#fff);color:inherit}
+#inventory-count{margin:6px 0 12px}
+@media(max-width:900px){.inventory-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.inventory-controls{grid-template-columns:1fr}}
