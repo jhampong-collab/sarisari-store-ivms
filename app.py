@@ -1188,6 +1188,35 @@ def v2_add_product():
     return jsonify(product_json(_v2_product(get_db(),sid,pid))),201
 
 
+@app.patch('/api/v2/products/<pid>')
+def v2_edit_product(pid):
+    sid,_,_=_v2_require('owner','manager','cashier')
+    d=request.get_json(silent=True)
+    if not isinstance(d,dict): raise ApiError('Invalid product details.')
+    # Do not accept stock or product ID edits here: stock is changed only via restock/sales.
+    allowed={'name','category','price','cost','reorder_level','expiration'}
+    if not d or set(d)-allowed: raise ApiError('Unsupported product fields.')
+    updates={}
+    if 'name' in d: updates['name']=text_field(d,'name','Name',80)
+    if 'category' in d: updates['category']=text_field(d,'category','Category',40,required=False)
+    if 'price' in d: updates['price_cents']=parse_money(d['price'],'Price',allow_zero=True)
+    if 'cost' in d:
+        updates['cost_cents']=parse_money(d['cost'],'Purchase cost',allow_zero=True) if str(d['cost'] if d['cost'] is not None else '').strip() else None
+    if 'reorder_level' in d: updates['reorder_level']=parse_int(d['reorder_level'],'Reorder level')
+    if 'expiration' in d:
+        exp=str(d['expiration'] or '').strip()
+        if exp:
+            try: date.fromisoformat(exp)
+            except ValueError: raise ApiError('Invalid expiration date.')
+        updates['expiration']=exp or None
+    fields=list(updates)
+    with write_tx() as db:
+        result=db.execute('UPDATE products SET '+', '.join(f'{field}=?' for field in fields)+' WHERE store_id=? AND id=?',
+            tuple(updates[field] for field in fields)+(sid,pid))
+        if result.rowcount != 1: raise ApiError('Product not found.',404)
+    return jsonify(product_json(_v2_product(get_db(),sid,pid)))
+
+
 @app.post('/api/v2/products/<pid>/restock')
 def v2_restock(pid):
     sid,_,_=_v2_require('owner','manager','cashier')

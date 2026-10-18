@@ -9,7 +9,30 @@ function option(select,value,label){const opt=document.createElement('option');o
 function selectOptions(id,items,label){const el=$(id);el.replaceChildren();option(el,'','Choose…');items.forEach(x=>option(el,x.id,label(x)));}
 let products=[],customers=[],currentRole='owner';
 async function load(){const dash=await api('dashboard');currentRole=dash.store.role;const roleLabels={owner:'Store Owner',manager:'Manager',cashier:'Cashier'};$('role-label').textContent=roleLabels[currentRole]||'Store member';$('role-avatar').textContent=({owner:'O',manager:'M',cashier:'C'})[currentRole]||'·';const [pr,cu]=await Promise.all([api('products'),currentRole==='cashier'?Promise.resolve([]):api('customers')]);document.querySelectorAll('[data-tab="staff"]').forEach(el=>el.hidden=currentRole!=='owner');document.querySelectorAll('[data-tab="credit"], [data-tab="reports"]').forEach(el=>el.hidden=currentRole==='cashier');$('product-form').hidden=false;$('customer-form').hidden=currentRole==='cashier';$('staff-tab').hidden=currentRole!=='owner';products=pr;customers=cu;$('store-name').textContent=dash.store.name;$('m-sales').textContent=money(dash.today_sales);$('m-products').textContent=dash.product_count;$('m-low').textContent=dash.low_stock.length;$('m-credit').textContent=money(dash.outstanding);$('m-trans').textContent=dash.today_transactions+' transactions';const low=$('low-list');low.replaceChildren();if(!dash.low_stock.length)low.textContent='All products are above their low-stock thresholds.';dash.low_stock.forEach(p=>{const row=document.createElement('div');const a=document.createElement('span'),b=document.createElement('strong');a.textContent=p.name;b.textContent=p.quantity+' left';row.append(a,b);low.append(row)});renderProducts();renderCustomers();selectOptions('sale-product',products,p=>p.name+' · '+p.quantity+' available');selectOptions('credit-product',products,p=>p.name+' · '+p.quantity+' available');selectOptions('credit-customer',customers,c=>c.name+' · '+money(c.balance));}
-function renderProducts(){const body=$('product-rows');body.replaceChildren();products.forEach(p=>{const tr=document.createElement('tr');cell(tr,p.id);cell(tr,p.name);cell(tr,money(p.price));cell(tr,p.quantity);cell(tr,p.status);const td=document.createElement('td'),b=document.createElement('button');b.textContent='+ Stock';b.hidden=false;b.onclick=async()=>{const v=prompt('How many units to add to '+p.name+'?');if(v===null)return;try{await api('products/'+encodeURIComponent(p.id)+'/restock','POST',{quantity:Number(v)});await load();msg('Stock updated.')}catch(e){msg(e.message)}};td.append(b);tr.append(td);body.append(tr)});}
+function renderProducts(){const body=$('product-rows');body.replaceChildren();products.forEach(p=>{const tr=document.createElement('tr');cell(tr,p.id);cell(tr,p.name);cell(tr,money(p.price));cell(tr,p.quantity);cell(tr,p.status);const td=document.createElement('td'),b=document.createElement('button');b.textContent='+ Stock';b.onclick=async()=>{const v=prompt('How many units to add to '+p.name+'?');if(v===null)return;try{await api('products/'+encodeURIComponent(p.id)+'/restock','POST',{quantity:Number(v)});await load();msg('Stock updated.')}catch(e){msg(e.message)}};td.append(b);tr.append(td);const editTd=document.createElement('td'),edit=document.createElement('button');edit.textContent='Edit';edit.onclick=()=>openProductEdit(p);editTd.append(edit);tr.append(editTd);body.append(tr)});}
+function openProductEdit(p){
+  const form=$('edit-product-form');
+  form.elements.namedItem('name').value=p.name;
+  form.elements.namedItem('category').value=p.category||'';
+  form.elements.namedItem('price').value=p.price;
+  form.elements.namedItem('cost').value=p.cost==null?'':p.cost;
+  form.elements.namedItem('reorder_level').value=p.reorder_level;
+  form.elements.namedItem('expiration').value=p.expiration||'';
+  $('edit-product-id').textContent=p.id+' — '+p.name;
+  form.dataset.productId=p.id;
+  $('edit-product-panel').hidden=false;
+  $('edit-product-panel').scrollIntoView({behavior:'smooth',block:'nearest'});
+}
+$('cancel-product-edit').onclick=()=>{$('edit-product-panel').hidden=true;};
+$('edit-product-form').onsubmit=async e=>{
+  e.preventDefault();const form=e.currentTarget;
+  const values=data(form);
+  try{
+    await api('products/'+encodeURIComponent(form.dataset.productId),'PATCH',values);
+    $('edit-product-panel').hidden=true;
+    await load();msg('Product details updated successfully.');
+  }catch(err){msg(err.message);$('alert').scrollIntoView({behavior:'smooth',block:'nearest'});}
+};
 function renderCustomers(){const body=$('customer-list');body.replaceChildren();if(!customers.length)body.textContent='No customers yet.';customers.forEach(c=>{const row=document.createElement('div');const a=document.createElement('span'),b=document.createElement('strong');a.textContent=c.name+' ('+c.id+')';b.textContent=money(c.balance);row.append(a,b);body.append(row)})}
 function data(form){return Object.fromEntries(new FormData(form).entries())}
 function submit(id,fn){$(id).onsubmit=async e=>{e.preventDefault();try{await fn(data(e.target));e.target.reset();msg('Saved successfully.');await load()}catch(err){msg(err.message)}}}
