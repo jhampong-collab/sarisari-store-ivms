@@ -1054,6 +1054,17 @@ def _v2_require_super_admin():
     return uid
 
 
+@app.get('/api/v2/admin/check')
+def v2_super_admin_check():
+    uid = _v2_require_super_admin()
+
+    return jsonify({
+        'ok': True,
+        'is_super_admin': True
+    })
+
+
+
 
 def _v2_require(*roles):
     sid, uid, store = _v2_context()
