@@ -1035,6 +1035,26 @@ def _v2_context():
     return str(row['id']), str(user['id']), row
 
 
+def _v2_require_super_admin():
+    user = _verified_auth_user()
+
+    if not USE_POSTGRES:
+        raise ApiError('PostgreSQL is required.', 503)
+
+    uid = str(user['id'])
+
+    row = get_db().execute(
+        'SELECT user_id FROM platform_admins WHERE user_id=?',
+        (uid,)
+    ).fetchone()
+
+    if not row:
+        raise ApiError('Super Admin access required.', 403)
+
+    return uid
+
+
+
 def _v2_require(*roles):
     sid, uid, store = _v2_context()
     if store['role'] not in roles:
