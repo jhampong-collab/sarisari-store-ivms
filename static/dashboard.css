@@ -41,3 +41,13 @@
 #inventory-count{margin:6px 0 12px}
 @media(max-width:900px){.inventory-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media(max-width:520px){.inventory-controls{grid-template-columns:1fr}}
+
+/* Inventory history — test branch only */
+.history-controls{display:grid;grid-template-columns:repeat(4,minmax(0,1fr)) auto;gap:12px;align-items:end;margin-bottom:12px}
+.history-controls label{display:flex;flex-direction:column;gap:6px;font-size:.85rem;font-weight:600}
+.history-controls input,.history-controls select{width:100%;min-width:0;box-sizing:border-box;padding:10px;border:1px solid #c4cedd;border-radius:8px;background:var(--surface,#fff);color:inherit}
+.history-controls button{min-height:40px}
+.history-positive{color:#159b68;font-weight:700}.history-negative{color:#e16666;font-weight:700}
+#history .table-scroll{overflow-x:auto}#history table{min-width:850px}
+@media(max-width:950px){.history-controls{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:520px){.history-controls{grid-template-columns:1fr}}

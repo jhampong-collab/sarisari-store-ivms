@@ -1242,6 +1242,36 @@ def v2_restock(pid):
 
 
 
+@app.get('/api/v2/inventory/movements')
+def v2_inventory_movements():
+    # Never trust a store_id supplied by the browser. The verified membership
+    # determines the only store whose history may be returned.
+    sid, _, _ = _v2_require('owner', 'manager', 'cashier')
+    movement_type = request.args.get('type', '').strip().upper()
+    if movement_type and movement_type not in ('STOCK_IN', 'STOCK_OUT', 'ADJUSTMENT'):
+        raise ApiError('Invalid movement type.', 400)
+    try:
+        limit = int(request.args.get('limit', '200'))
+    except (TypeError, ValueError):
+        raise ApiError('Invalid limit.', 400)
+    if not 1 <= limit <= 500:
+        raise ApiError('Limit must be between 1 and 500.', 400)
+    sql = """SELECT im.id, im.product_id, p.name AS product_name,
+                    im.movement_type, im.quantity_change, im.quantity_before,
+                    im.quantity_after, im.remarks, im.performed_by, im.created_at
+             FROM inventory_movements im
+             JOIN products p ON p.store_id=im.store_id AND p.id=im.product_id
+             WHERE im.store_id=?"""
+    params = [sid]
+    if movement_type:
+        sql += ' AND im.movement_type=?'
+        params.append(movement_type)
+    sql += ' ORDER BY im.created_at DESC, im.id DESC LIMIT ?'
+    params.append(limit)
+    rows = get_db().execute(sql, tuple(params)).fetchall()
+    return jsonify([dict(row) for row in rows])
+
+
 @app.post('/api/v2/sales')
 def v2_sale():
     sid, uid, _ = _v2_require(

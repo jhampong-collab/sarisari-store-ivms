@@ -72,7 +72,43 @@ function submit(id,fn){$(id).onsubmit=async e=>{e.preventDefault();try{await fn(
 submit('product-form',d=>api('products','POST',d));submit('sale-form',async d=>{const r=await api('sales','POST',d);msg('Sale recorded: '+money(r.total))});submit('customer-form',d=>api('customers','POST',d));submit('credit-form',d=>{const cid=encodeURIComponent(d.customer_id);return api('customers/'+cid+'/'+d.kind,'POST',d.kind==='charge'?{product_id:d.product_id,quantity:d.quantity}:{amount:d.amount})});
 $('credit-kind').onchange=()=>{const payment=$('credit-kind').value==='payment';$('charge-field').hidden=payment;$('quantity-field').hidden=payment;$('payment-field').hidden=!payment};
 async function report(){const d=await api('reports');const body=$('report-rows');body.replaceChildren();d.recent_sales.forEach(s=>{const tr=document.createElement('tr');cell(tr,s.product);cell(tr,s.quantity);cell(tr,money(s.total));cell(tr,s.at);body.append(tr)})}
-function show(tab){document.querySelectorAll('.pane').forEach(p=>p.hidden=p.id!==tab);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));if(tab==='reports')report().catch(e=>msg(e.message));if(tab==='staff')loadStaff().catch(e=>msg(e.message));}
+let historyMovements=[];
+async function loadHistory(){
+ $('history-count').textContent='Loading history…';
+ try{
+  historyMovements=await api('inventory/movements?limit=200');
+  renderHistory();
+ }catch(err){$('history-count').textContent='Could not load history.';throw err;}
+}
+function renderHistory(){
+ const search=$('history-search').value.trim().toLocaleLowerCase();
+ const type=$('history-type').value;
+ const from=$('history-from').value;
+ const to=$('history-to').value;
+ const rows=historyMovements.filter(m=>{
+  const name=String(m.product_name||'').toLocaleLowerCase();
+  const pid=String(m.product_id||'').toLocaleLowerCase();
+  const day=String(m.created_at||'').slice(0,10);
+  return (!search||name.includes(search)||pid.includes(search))&&
+   (!type||m.movement_type===type)&&(!from||day>=from)&&(!to||day<=to);
+ });
+ $('history-count').textContent=`Showing ${rows.length} of ${historyMovements.length} recent transactions`;
+ $('history-empty').hidden=rows.length!==0;
+ const body=$('history-rows');body.replaceChildren();
+ rows.forEach(m=>{
+  const tr=document.createElement('tr');
+  const date=new Date(m.created_at);
+  cell(tr,Number.isNaN(date.getTime())?m.created_at:date.toLocaleString('en-PH'));
+  cell(tr,`${m.product_id} — ${m.product_name}`);
+  cell(tr,({STOCK_IN:'Stock in',STOCK_OUT:'Stock out',ADJUSTMENT:'Adjustment'})[m.movement_type]||m.movement_type);
+  cell(tr,m.quantity_before);
+  const change=Number(m.quantity_change);const td=cell(tr,change>0?`+${change}`:change);td.className=change>0?'history-positive':change<0?'history-negative':'';
+  cell(tr,m.quantity_after);cell(tr,m.performed_by||'—');cell(tr,m.remarks||'—');body.append(tr);
+ });
+}
+['history-search','history-type','history-from','history-to'].forEach(id=>$(id).addEventListener('input',renderHistory));
+$('history-refresh').onclick=()=>loadHistory().catch(e=>msg(e.message));
+function show(tab){document.querySelectorAll('.pane').forEach(p=>p.hidden=p.id!==tab);document.querySelectorAll('[data-tab]').forEach(b=>b.classList.toggle('active',b.dataset.tab===tab));if(tab==='reports')report().catch(e=>msg(e.message));if(tab==='staff')loadStaff().catch(e=>msg(e.message));if(tab==='history')loadHistory().catch(e=>msg(e.message));}
 document.querySelectorAll('[data-tab]').forEach(b=>b.onclick=()=>show(b.dataset.tab));// Clear local session and ask Supabase to revoke this access token.
 async function signOut(){
   const current=sessionStorage.getItem('sari_v2_test_token');
