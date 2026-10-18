@@ -1241,19 +1241,94 @@ def v2_restock(pid):
     return jsonify(product_json(_v2_product(get_db(), sid, pid)))
 
 
+
 @app.post('/api/v2/sales')
 def v2_sale():
-    sid,uid,_=_v2_require('owner','manager','cashier')
-    d=request.get_json(silent=True) or {}
-    qty=parse_int(d.get('quantity'),'Quantity',1)
-    pid=str(d.get('product_id','')).strip()
+    sid, uid, _ = _v2_require(
+        'owner', 'manager', 'cashier'
+    )
+
+    d = request.get_json(silent=True) or {}
+    qty = parse_int(d.get('quantity'), 'Quantity', 1)
+    pid = str(d.get('product_id', '')).strip()
+
     with write_tx() as db:
-        product=_v2_product(db,sid,pid)
-        result=db.execute('UPDATE products SET quantity=quantity-? WHERE store_id=? AND id=? AND quantity>=?',(qty,sid,pid,qty))
-        if result.rowcount != 1: raise ApiError('Insufficient stock.',400)
-        db.execute('INSERT INTO sales (store_id,product_id,product_name,quantity,unit_price_cents,unit_cost_cents,sold_at,username) VALUES (?,?,?,?,?,?,?,?)',
-            (sid,pid,product['name'],qty,product['price_cents'],product['cost_cents'],now().isoformat(timespec='seconds'),uid))
-    return jsonify({'ok':True,'total':qty*product['price_cents']/100})
+        product = _v2_product(db, sid, pid)
+
+        quantity_before = int(product['quantity'])
+        quantity_after = quantity_before - qty
+
+        result = db.execute(
+            '''
+            UPDATE products
+            SET quantity = quantity - ?
+            WHERE store_id = ?
+              AND id = ?
+              AND quantity >= ?
+            ''',
+            (qty, sid, pid, qty)
+        )
+
+        if result.rowcount != 1:
+            raise ApiError('Insufficient stock.', 400)
+
+        db.execute(
+            '''
+            INSERT INTO sales (
+                store_id,
+                product_id,
+                product_name,
+                quantity,
+                unit_price_cents,
+                unit_cost_cents,
+                sold_at,
+                username
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                sid,
+                pid,
+                product['name'],
+                qty,
+                product['price_cents'],
+                product['cost_cents'],
+                now().isoformat(timespec='seconds'),
+                uid
+            )
+        )
+
+        db.execute(
+            '''
+            INSERT INTO inventory_movements (
+                store_id,
+                product_id,
+                movement_type,
+                quantity_change,
+                quantity_before,
+                quantity_after,
+                remarks,
+                performed_by
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                sid,
+                pid,
+                'STOCK_OUT',
+                -qty,
+                quantity_before,
+                quantity_after,
+                'Product sold',
+                uid
+            )
+        )
+
+    return jsonify({
+        'ok': True,
+        'total': qty * product['price_cents'] / 100
+    })
+
 
 
 @app.get('/api/v2/customers')
