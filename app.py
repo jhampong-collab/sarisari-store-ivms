@@ -1241,6 +1241,61 @@ def v2_restock(pid):
     return jsonify(product_json(_v2_product(get_db(), sid, pid)))
 
 
+@app.post('/api/v2/products/<pid>/adjust')
+def v2_adjust_stock(pid):
+    sid, uid, _ = _v2_require('owner', 'manager')
+    data = request.get_json(silent=True) or {}
+
+    new_qty = parse_int(
+        data.get('new_quantity'),
+        'New quantity',
+        0
+    )
+
+    reason = str(data.get('reason') or '').strip()
+    if not reason:
+        raise ApiError('Adjustment reason is required.', 400)
+    if len(reason) > 500:
+        raise ApiError('Reason must be 500 characters or less.', 400)
+
+    with write_tx() as db:
+        product = _v2_product(db, sid, pid)
+        before = int(product['quantity'])
+        difference = new_qty - before
+
+        if difference == 0:
+            raise ApiError(
+                'New quantity must differ from current stock.',
+                400
+            )
+
+        result = db.execute(
+            'UPDATE products SET quantity=? '
+            'WHERE store_id=? AND id=?',
+            (new_qty, sid, pid)
+        )
+        if result.rowcount != 1:
+            raise ApiError('Product not found.', 404)
+
+        db.execute(
+            """INSERT INTO inventory_movements
+               (store_id, product_id, movement_type,
+                quantity_change, quantity_before,
+                quantity_after, remarks, performed_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                sid, pid, 'ADJUSTMENT',
+                difference, before, new_qty,
+                reason, uid
+            )
+        )
+
+    return jsonify(
+        product_json(_v2_product(get_db(), sid, pid))
+    )
+
+
+
 
 @app.get('/api/v2/inventory/movements')
 def v2_inventory_movements():
