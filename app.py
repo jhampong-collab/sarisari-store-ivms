@@ -928,8 +928,23 @@ def index():
 
 @app.get("/sw.js")
 def service_worker():
-    resp = Response("self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.registration.unregister().then(()=>caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k))))));", mimetype="application/javascript")
+    # Retire older service workers without caching application/API responses.
+    script = """self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    self.registration.unregister().then(() =>
+      caches.keys().then((keys) => Promise.all(
+        keys.filter((key) => key.startsWith('sari-shell-')).map((key) => caches.delete(key))
+      ))
+    )
+  );
+});
+"""
+    resp = Response(script, mimetype="application/javascript")
     resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
