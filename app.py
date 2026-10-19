@@ -1248,6 +1248,50 @@ def v2_admin_update_store_status(store_id):
     })
 
 
+@app.get('/api/v2/admin/logs')
+def v2_admin_activity_logs():
+    _v2_require_super_admin()
+
+    rows = get_db().execute(
+        """
+        SELECT
+            l.id,
+            l.admin_user_id,
+            l.store_id,
+            s.name AS store_name,
+            l.action,
+            l.previous_status,
+            l.new_status,
+            l.reason,
+            l.created_at
+        FROM platform_admin_logs l
+        JOIN stores s ON s.id = l.store_id
+        ORDER BY l.created_at DESC, l.id DESC
+        LIMIT 100
+        """
+    ).fetchall()
+
+    return jsonify([
+        {
+            'id': str(row['id']),
+            'admin_user_id': str(row['admin_user_id']),
+            'store_id': str(row['store_id']),
+            'store_name': row['store_name'],
+            'action': row['action'],
+            'previous_status': row['previous_status'],
+            'new_status': row['new_status'],
+            'reason': row['reason'],
+            'created_at': (
+                row['created_at'].isoformat()
+                if hasattr(row['created_at'], 'isoformat')
+                else str(row['created_at'])
+            )
+        }
+        for row in rows
+    ])
+
+
+
 
 
 
