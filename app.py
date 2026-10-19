@@ -1157,15 +1157,27 @@ def v2_admin_list_stores():
     ])
 
 
+
 @app.post('/api/v2/admin/stores/<store_id>/status')
 def v2_admin_update_store_status(store_id):
-    _v2_require_super_admin()
+    admin_uid = _v2_require_super_admin()
 
     data = request.get_json(silent=True) or {}
+
     status = str(data.get('status') or '').strip().lower()
+    reason = str(data.get('reason') or '').strip()
 
     if status not in ('active', 'suspended'):
         raise ApiError('Invalid store status.', 400)
+
+    if not reason:
+        raise ApiError('Reason is required.', 400)
+
+    if len(reason) > 500:
+        raise ApiError(
+            'Reason must be 500 characters or less.',
+            400
+        )
 
     try:
         store_uuid = str(uuid.UUID(store_id))
@@ -1181,23 +1193,60 @@ def v2_admin_update_store_status(store_id):
         if not row:
             raise ApiError('Store not found.', 404)
 
-        if row['status'] == status:
+        previous_status = row['status']
+
+        if previous_status == status:
             raise ApiError(
                 'Store already has the requested status.',
                 400
             )
 
-        db.execute(
+        result = db.execute(
             'UPDATE stores SET status=? WHERE id=?',
             (status, store_uuid)
+        )
+
+        if result.rowcount != 1:
+            raise ApiError('Store update failed.', 500)
+
+        action = (
+            'STORE_SUSPENDED'
+            if status == 'suspended'
+            else 'STORE_REACTIVATED'
+        )
+
+        db.execute(
+            """
+            INSERT INTO platform_admin_logs
+            (
+                admin_user_id,
+                store_id,
+                action,
+                previous_status,
+                new_status,
+                reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                admin_uid,
+                store_uuid,
+                action,
+                previous_status,
+                status,
+                reason
+            )
         )
 
     return jsonify({
         'ok': True,
         'store_id': store_uuid,
         'store_name': row['name'],
-        'status': status
+        'previous_status': previous_status,
+        'status': status,
+        'action': action
     })
+
 
 
 
