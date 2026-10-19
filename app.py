@@ -1041,18 +1041,51 @@ def v2_account():
 
 
 # STEP 6: Tenant-safe business endpoints. Never accept store_id from the browser.
+
 def _v2_context():
     user = _verified_auth_user()
+
     if not USE_POSTGRES:
         raise ApiError('PostgreSQL is required.', 503)
-    row = get_db().execute('SELECT s.id,s.name,m.role FROM store_memberships m '
-        'JOIN stores s ON s.id=m.store_id WHERE m.user_id=? ORDER BY s.name LIMIT 1',
-        (user['id'],)).fetchone()
+
+    row = get_db().execute(
+        """
+        SELECT
+            s.id,
+            s.name,
+            s.status,
+            m.role
+        FROM store_memberships m
+        JOIN stores s
+            ON s.id = m.store_id
+        WHERE m.user_id = ?
+        ORDER BY s.name
+        LIMIT 1
+        """,
+        (user['id'],)
+    ).fetchone()
+
     if not row:
-        raise ApiError('Activate your verified store first.', 403)
-    if row['role'] not in ('owner','manager','cashier'):
-        raise ApiError('Unrecognized membership role.', 403)
+        raise ApiError(
+            'Activate your verified store first.',
+            403
+        )
+
+    if row['role'] not in ('owner', 'manager', 'cashier'):
+        raise ApiError(
+            'Unrecognized membership role.',
+            403
+        )
+
+    if row['status'] == 'suspended':
+        raise ApiError(
+            'This store has been suspended. '
+            'Contact the platform administrator.',
+            403
+        )
+
     return str(row['id']), str(user['id']), row
+
 
 
 def _v2_require_super_admin():
