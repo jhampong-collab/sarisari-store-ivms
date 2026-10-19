@@ -13,6 +13,7 @@ Run (real use):      see README.md  (needs HTTPS for phones to install it)
 """
 
 import os
+import uuid
 import csv
 import io
 import re
@@ -1152,6 +1153,50 @@ def v2_admin_list_stores():
         }
         for row in rows
     ])
+
+
+@app.post('/api/v2/admin/stores/<store_id>/status')
+def v2_admin_update_store_status(store_id):
+    _v2_require_super_admin()
+
+    data = request.get_json(silent=True) or {}
+    status = str(data.get('status') or '').strip().lower()
+
+    if status not in ('active', 'suspended'):
+        raise ApiError('Invalid store status.', 400)
+
+    try:
+        store_uuid = str(uuid.UUID(store_id))
+    except (ValueError, AttributeError):
+        raise ApiError('Invalid store ID.', 400)
+
+    with write_tx() as db:
+        row = db.execute(
+            'SELECT id, name, status FROM stores WHERE id=?',
+            (store_uuid,)
+        ).fetchone()
+
+        if not row:
+            raise ApiError('Store not found.', 404)
+
+        if row['status'] == status:
+            raise ApiError(
+                'Store already has the requested status.',
+                400
+            )
+
+        db.execute(
+            'UPDATE stores SET status=? WHERE id=?',
+            (status, store_uuid)
+        )
+
+    return jsonify({
+        'ok': True,
+        'store_id': store_uuid,
+        'store_name': row['name'],
+        'status': status
+    })
+
 
 
 
