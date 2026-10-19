@@ -33,11 +33,34 @@
     const buttons = body.querySelectorAll('button');
     buttons.forEach(button => { button.disabled = true; });
     try {
-      const response = await fetch('/api/v2/admin/stores/' + encodeURIComponent(store.id) + '/status', {
-        method: 'POST',
-        headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ status: target })
-      });
+      
+const reason = window.prompt(
+  target === 'suspended'
+    ? 'Enter reason for suspending "' + store.name + '":'
+    : 'Enter reason for reactivating "' + store.name + '":'
+);
+
+if (reason === null || !reason.trim()) {
+  showMessage('Action cancelled. A reason is required.');
+  buttons.forEach(button => { button.disabled = false; });
+  return;
+}
+
+if (reason.trim().length > 500) {
+  showMessage('Reason must be 500 characters or less.');
+  buttons.forEach(button => { button.disabled = false; });
+  return;
+}
+
+const response = await fetch('/api/v2/admin/stores/' + encodeURIComponent(store.id) + '/status', {
+  method: 'POST',
+  headers: { ...headers, 'Content-Type': 'application/json' },
+  body: JSON.stringify({
+    status: target,
+    reason: reason.trim()
+  })
+});
+
       const result = await response.json().catch(() => ({}));
       if (!response.ok || result.ok !== true || result.status !== target) {
         showMessage(result.error || 'Unable to change store status (HTTP ' + response.status + ').');
