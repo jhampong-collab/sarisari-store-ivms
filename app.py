@@ -1186,7 +1186,7 @@ def v2_admin_update_store_status(store_id):
 
     with write_tx() as db:
         row = db.execute(
-            'SELECT id, name, status FROM stores WHERE id=?',
+            'SELECT id, name, status FROM stores WHERE id=? FOR UPDATE',
             (store_uuid,)
         ).fetchone()
 
@@ -1350,6 +1350,10 @@ def v2_accept_invitation():
         if not inv or inv['status']!='pending': raise ApiError('Invitation is not pending.', 404)
         if inv['expires_at'] <= datetime.now(timezone.utc): raise ApiError('Invitation has expired.', 410)
         if inv['email'].strip().lower()!=email: raise ApiError('This invitation belongs to a different verified email.', 403)
+        # Invitation acceptance is a store write: suspension must block it too.
+        store = db.execute('SELECT status FROM stores WHERE id=?', (inv['store_id'],)).fetchone()
+        if not store or store['status'] != 'active':
+            raise ApiError('This store is suspended or unavailable.', 403)
         exists = db.execute('SELECT 1 FROM store_memberships WHERE store_id=? AND user_id=?', (inv['store_id'],uid)).fetchone()
         if exists: raise ApiError('You already belong to this store.', 409)
         db.execute('INSERT INTO store_memberships(store_id,user_id,role) VALUES (?,?,?)', (inv['store_id'],uid,inv['role']))
