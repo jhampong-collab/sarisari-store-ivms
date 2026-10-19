@@ -67,7 +67,7 @@ const response = await fetch('/api/v2/admin/stores/' + encodeURIComponent(store.
         buttons.forEach(button => { button.disabled = false; });
         return;
       }
-      await loadStores();
+      await Promise.all([loadStores(), loadLogs()]);
       showMessage('Store "' + store.name + '" successfully ' + (target === 'suspended' ? 'suspended.' : 'reactivated.'));
     } catch (error) {
       showMessage('Network error. Refresh to check the current status before trying again.');
@@ -140,6 +140,83 @@ const response = await fetch('/api/v2/admin/stores/' + encodeURIComponent(store.
       refresh.disabled = false;
     }
   }
+
+  const logsBody = document.getElementById('logs-body');
+  const logsStatus = document.getElementById('logs-status');
+  const logsSearch = document.getElementById('logs-search');
+  const logsFilter = document.getElementById('logs-filter');
+  const refreshLogs = document.getElementById('refresh-logs');
+  let logs = [];
+  const manilaTime = new Intl.DateTimeFormat('en-PH', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: 'short', day: '2-digit',
+    hour: '2-digit', minute: '2-digit', hour12: true
+  });
+  function renderLogs() {
+    const query = logsSearch.value.trim().toLocaleLowerCase();
+    const action = logsFilter.value;
+    const filtered = logs.filter(log =>
+      (action === 'all' || log.action === action) &&
+      [log.store_name, log.reason, log.action, log.previous_status, log.new_status]
+        .some(value => String(value || '').toLocaleLowerCase().includes(query)));
+    logsBody.replaceChildren();
+    for (const log of filtered) {
+      const tr = document.createElement('tr');
+      const dateCell = document.createElement('td');
+      const parsed = new Date(log.created_at);
+      dateCell.textContent = Number.isNaN(parsed.getTime()) ? 'Unknown' : manilaTime.format(parsed);
+      tr.appendChild(dateCell);
+      const storeCell = document.createElement('td');
+      storeCell.textContent = log.store_name;
+      tr.appendChild(storeCell);
+      const actionCell = document.createElement('td');
+      const pill = document.createElement('span');
+      pill.className = 'status-pill ' + (log.action === 'STORE_SUSPENDED' ? 'status-suspended' : 'status-active');
+      pill.textContent = log.action === 'STORE_SUSPENDED' ? 'Suspended' : 'Reactivated';
+      actionCell.appendChild(pill);
+      tr.appendChild(actionCell);
+      const changeCell = document.createElement('td');
+      changeCell.textContent = log.previous_status + ' → ' + log.new_status;
+      tr.appendChild(changeCell);
+      const reasonCell = document.createElement('td');
+      reasonCell.className = 'log-reason';
+      reasonCell.textContent = log.reason;
+      tr.appendChild(reasonCell);
+      logsBody.appendChild(tr);
+    }
+    logsStatus.textContent = filtered.length
+      ? 'Showing ' + filtered.length + ' of ' + logs.length + ' recent activity records.'
+      : (logs.length ? 'No activity records match your filters.' : 'No activity logs yet.');
+  }
+  async function loadLogs() {
+    refreshLogs.disabled = true;
+    logsStatus.textContent = 'Loading activity logs…';
+    try {
+      const response = await fetch('/api/v2/admin/logs', { method: 'GET', cache: 'no-store', headers });
+      if (!response.ok) {
+        logsStatus.textContent = response.status === 403 ? 'Super Admin access required.' :
+          'Unable to load activity logs (HTTP ' + response.status + ').';
+        return;
+      }
+      const result = await response.json();
+      if (!Array.isArray(result) || !result.every(row => row &&
+        typeof row.store_name === 'string' && typeof row.reason === 'string' &&
+        typeof row.created_at === 'string' &&
+        ['STORE_SUSPENDED', 'STORE_REACTIVATED'].includes(row.action))) {
+        logsStatus.textContent = 'Unexpected activity log data from the server.';
+        return;
+      }
+      logs = result;
+      renderLogs();
+    } catch (error) {
+      logsStatus.textContent = 'Network error while loading activity logs.';
+    } finally {
+      refreshLogs.disabled = false;
+    }
+  }
+  logsSearch.addEventListener('input', renderLogs);
+  logsFilter.addEventListener('change', renderLogs);
+  refreshLogs.addEventListener('click', loadLogs);
+
   search.addEventListener('input', renderStores);
   refresh.addEventListener('click', loadStores);
   try {
@@ -155,7 +232,7 @@ const response = await fetch('/api/v2/admin/stores/' + encodeURIComponent(store.
     }
     status.textContent = 'Welcome to INTENSITY Platform Administration.';
     content.hidden = false;
-    await loadStores();
+    await Promise.all([loadStores(), loadLogs()]);
   } catch (error) {
     status.textContent = 'Unable to verify access. Please check your connection and refresh.';
   }
