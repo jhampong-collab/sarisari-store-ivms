@@ -22,6 +22,35 @@
     window.location.replace('/');
     return;
   }
+  function showMessage(message) {
+    storesStatus.textContent = message;
+  }
+  async function changeStoreStatus(store) {
+    const target = store.status === 'active' ? 'suspended' : 'active';
+    const verb = target === 'suspended' ? 'Suspend' : 'Reactivate';
+    if (!window.confirm(verb + ' "' + store.name + '"? ' +
+      (target === 'suspended' ? 'Its members will lose store API access until reactivated.' : 'Its members will regain access.'))) return;
+    const buttons = body.querySelectorAll('button');
+    buttons.forEach(button => { button.disabled = true; });
+    try {
+      const response = await fetch('/api/v2/admin/stores/' + encodeURIComponent(store.id) + '/status', {
+        method: 'POST',
+        headers: { ...headers, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: target })
+      });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok || result.ok !== true || result.status !== target) {
+        showMessage(result.error || 'Unable to change store status (HTTP ' + response.status + ').');
+        buttons.forEach(button => { button.disabled = false; });
+        return;
+      }
+      await loadStores();
+      showMessage('Store "' + store.name + '" successfully ' + (target === 'suspended' ? 'suspended.' : 'reactivated.'));
+    } catch (error) {
+      showMessage('Network error. Refresh to check the current status before trying again.');
+      buttons.forEach(button => { button.disabled = false; });
+    }
+  }
   function renderStores() {
     const query = search.value.trim().toLocaleLowerCase();
     const filtered = stores.filter(store =>
@@ -30,13 +59,32 @@
     visibleStores.textContent = String(filtered.length);
     for (const store of filtered) {
       const tr = document.createElement('tr');
-      for (const value of [store.name, store.id, String(store.member_count)]) {
-        const td = document.createElement('td');
-        td.textContent = value;
-        if (value === store.id) td.className = 'store-id';
-        if (value === String(store.member_count)) td.classList.add('number');
-        tr.appendChild(td);
-      }
+      const nameCell = document.createElement('td');
+      nameCell.textContent = store.name;
+      tr.appendChild(nameCell);
+      const idCell = document.createElement('td');
+      idCell.textContent = store.id;
+      idCell.className = 'store-id';
+      tr.appendChild(idCell);
+      const membersCell = document.createElement('td');
+      membersCell.textContent = String(store.member_count);
+      membersCell.className = 'number';
+      tr.appendChild(membersCell);
+      const statusCell = document.createElement('td');
+      const badge = document.createElement('span');
+      badge.className = 'status-pill ' + (store.status === 'active' ? 'status-active' : 'status-suspended');
+      badge.textContent = store.status === 'active' ? 'Active' : 'Suspended';
+      statusCell.appendChild(badge);
+      tr.appendChild(statusCell);
+      const actionCell = document.createElement('td');
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = store.status === 'active' ? 'action-danger' : 'action-success';
+      action.textContent = store.status === 'active' ? 'Suspend' : 'Reactivate';
+      action.setAttribute('aria-label', action.textContent + ' ' + store.name);
+      action.addEventListener('click', () => changeStoreStatus(store));
+      actionCell.appendChild(action);
+      tr.appendChild(actionCell);
       body.appendChild(tr);
     }
     storesStatus.textContent = filtered.length
@@ -55,7 +103,7 @@
         return;
       }
       const result = await response.json();
-      if (!Array.isArray(result) || !result.every(row => row && typeof row.id === 'string' && typeof row.name === 'string' && Number.isInteger(row.member_count))) {
+      if (!Array.isArray(result) || !result.every(row => row && typeof row.id === 'string' && typeof row.name === 'string' && Number.isInteger(row.member_count) && ['active', 'suspended'].includes(row.status))) {
         storesStatus.textContent = 'Unexpected store data returned by the server.';
         return;
       }

@@ -1136,11 +1136,12 @@ def v2_admin_list_stores():
         SELECT
             s.id,
             s.name,
+            s.status,
             COUNT(DISTINCT m.user_id) AS member_count
         FROM stores s
         LEFT JOIN store_memberships m
             ON m.store_id = s.id
-        GROUP BY s.id, s.name
+        GROUP BY s.id, s.name, s.status
         ORDER BY s.name ASC
         """
     ).fetchall()
@@ -1149,6 +1150,7 @@ def v2_admin_list_stores():
         {
             'id': str(row['id']),
             'name': row['name'],
+            'status': row['status'],
             'member_count': int(row['member_count'])
         }
         for row in rows
