@@ -1,17 +1,32 @@
 {
   "id": "/",
-  "name": "Sari-Sari Store Inventory",
-  "short_name": "Sari-Sari",
-  "description": "Inventory, sales, and customer credit for a sari-sari store.",
+  "name": "INTENSITY Inventory Management",
+  "short_name": "INTENSITY",
+  "description": "Private multi-store inventory management with sales and stock tracking.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "orientation": "portrait",
-  "background_color": "#2d6a4f",
-  "theme_color": "#2d6a4f",
+  "background_color": "#07172f",
+  "theme_color": "#07172f",
   "icons": [
-    {"src": "/static/icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any"},
-    {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any"},
-    {"src": "/static/icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable"}
+    {
+      "src": "/static/icons/icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "/static/icons/icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
   ]
 }
