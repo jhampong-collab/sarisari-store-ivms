@@ -1093,6 +1093,35 @@ def _v2_require(*roles):
     return sid, uid, store
 
 
+@app.get('/api/v2/admin/stores')
+def v2_admin_list_stores():
+    _v2_require_super_admin()
+
+    rows = get_db().execute(
+        """
+        SELECT
+            s.id,
+            s.name,
+            COUNT(DISTINCT m.user_id) AS member_count
+        FROM stores s
+        LEFT JOIN store_memberships m
+            ON m.store_id = s.id
+        GROUP BY s.id, s.name
+        ORDER BY s.name ASC
+        """
+    ).fetchall()
+
+    return jsonify([
+        {
+            'id': str(row['id']),
+            'name': row['name'],
+            'member_count': int(row['member_count'])
+        }
+        for row in rows
+    ])
+
+
+
 @app.get('/api/v2/staff/invitations')
 def v2_list_staff_invitations():
     sid, _, _ = _v2_require('owner')
