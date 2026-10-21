@@ -13,6 +13,7 @@ Run (real use):      see README.md  (needs HTTPS for phones to install it)
 """
 
 import os
+import uuid
 import csv
 import io
 import re
@@ -31,7 +32,8 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory, ses
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # Bump this when you ship an update. Every phone sees an "update available" banner.
-APP_VERSION = "2.0.0-test.1"
+# Bump this when you ship an update. Every phone sees an "update available" banner.
+APP_VERSION = "2.1.0-test"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -412,7 +414,7 @@ def handle_unexpected(e):
 @app.before_request
 def block_legacy_business_api():
     # TEST BUILD: original endpoints are NOT tenant-aware; never expose them.
-    if request.path.startswith('/api/') and request.path not in ('/api/version', '/api/v2/config', '/api/v2/provision', '/api/v2/account'):
+    if request.path.startswith('/api/') and not (request.path.startswith('/api/v2/') or request.path == '/api/version'):
         return jsonify({'error': 'This legacy endpoint is disabled until tenant isolation is implemented.'}), 403
 
 
@@ -928,8 +930,23 @@ def index():
 
 @app.get("/sw.js")
 def service_worker():
-    resp = Response("self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>e.waitUntil(self.registration.unregister().then(()=>caches.keys().then(keys=>Promise.all(keys.map(k=>caches.delete(k))))));", mimetype="application/javascript")
+    # Retire older service workers without caching application/API responses.
+    script = """self.addEventListener('install', (event) => {
+  self.skipWaiting();
+});
+self.addEventListener('activate', (event) => {
+  event.waitUntil(
+    self.registration.unregister().then(() =>
+      caches.keys().then((keys) => Promise.all(
+        keys.filter((key) => key.startsWith('sari-shell-')).map((key) => caches.delete(key))
+      ))
+    )
+  );
+});
+"""
+    resp = Response(script, mimetype="application/javascript")
     resp.headers["Service-Worker-Allowed"] = "/"
+    resp.headers["Cache-Control"] = "no-store"
     return resp
 
 
@@ -941,6 +958,16 @@ def manifest():
 @app.get("/healthz")
 def healthz():
     return jsonify({"ok": True, "version": APP_VERSION})
+
+
+@app.get('/dashboard')
+def v2_dashboard():
+    return send_from_directory(STATIC_DIR, 'dashboard.html')
+
+
+@app.get('/admin')
+def v2_admin_page():
+    return send_from_directory(STATIC_DIR, 'admin.html')
 
 
 @app.get('/api/v2/config')
@@ -1004,15 +1031,719 @@ def v2_provision():
     except BaseException:
         db.execute('ROLLBACK')
         raise
-    return jsonify({'ok': True, 'store_id': store_id, 'message': 'Store account activated. Inventory dashboard is not yet enabled in this test build.'})
+    return jsonify({'ok': True, 'store_id': store_id, 'message': 'Store account activated. Opening your private dashboard.'})
 
 
 @app.get('/api/v2/account')
 def v2_account():
     user = _verified_auth_user()
-    row = get_db().execute("SELECT s.id,s.name,m.role FROM store_memberships m JOIN stores s ON s.id=m.store_id WHERE m.user_id=? AND m.role='owner' LIMIT 1", (user['id'],)).fetchone()
+    row = get_db().execute("SELECT s.id,s.name,m.role FROM store_memberships m JOIN stores s ON s.id=m.store_id WHERE m.user_id=? ORDER BY CASE WHEN m.role='owner' THEN 0 ELSE 1 END, s.name LIMIT 1", (user['id'],)).fetchone()
     return jsonify({'email': user.get('email'), 'store': dict(row) if row else None})
 
+
+
+# STEP 6: Tenant-safe business endpoints. Never accept store_id from the browser.
+
+def _v2_context():
+    user = _verified_auth_user()
+
+    if not USE_POSTGRES:
+        raise ApiError('PostgreSQL is required.', 503)
+
+    row = get_db().execute(
+        """
+        SELECT
+            s.id,
+            s.name,
+            s.status,
+            m.role
+        FROM store_memberships m
+        JOIN stores s
+            ON s.id = m.store_id
+        WHERE m.user_id = ?
+        ORDER BY s.name
+        LIMIT 1
+        """,
+        (user['id'],)
+    ).fetchone()
+
+    if not row:
+        raise ApiError(
+            'Activate your verified store first.',
+            403
+        )
+
+    if row['role'] not in ('owner', 'manager', 'cashier'):
+        raise ApiError(
+            'Unrecognized membership role.',
+            403
+        )
+
+    if row['status'] == 'suspended':
+        raise ApiError(
+            'This store has been suspended. '
+            'Contact the platform administrator.',
+            403
+        )
+
+    return str(row['id']), str(user['id']), row
+
+
+
+def _v2_require_super_admin():
+    user = _verified_auth_user()
+
+    if not USE_POSTGRES:
+        raise ApiError('PostgreSQL is required.', 503)
+
+    uid = str(user['id'])
+
+    row = get_db().execute(
+        'SELECT user_id FROM platform_admins WHERE user_id=?',
+        (uid,)
+    ).fetchone()
+
+    if not row:
+        raise ApiError('Super Admin access required.', 403)
+
+    return uid
+
+
+@app.get('/api/v2/admin/check')
+def v2_super_admin_check():
+    uid = _v2_require_super_admin()
+
+    return jsonify({
+        'ok': True,
+        'is_super_admin': True
+    })
+
+
+
+
+def _v2_require(*roles):
+    sid, uid, store = _v2_context()
+    if store['role'] not in roles:
+        raise ApiError('Your store role does not allow this operation.', 403)
+    return sid, uid, store
+
+
+@app.get('/api/v2/admin/stores')
+def v2_admin_list_stores():
+    _v2_require_super_admin()
+
+    rows = get_db().execute(
+        """
+        SELECT
+            s.id,
+            s.name,
+            s.status,
+            COUNT(DISTINCT m.user_id) AS member_count
+        FROM stores s
+        LEFT JOIN store_memberships m
+            ON m.store_id = s.id
+        GROUP BY s.id, s.name, s.status
+        ORDER BY s.name ASC
+        """
+    ).fetchall()
+
+    return jsonify([
+        {
+            'id': str(row['id']),
+            'name': row['name'],
+            'status': row['status'],
+            'member_count': int(row['member_count'])
+        }
+        for row in rows
+    ])
+
+
+
+@app.post('/api/v2/admin/stores/<store_id>/status')
+def v2_admin_update_store_status(store_id):
+    admin_uid = _v2_require_super_admin()
+
+    data = request.get_json(silent=True) or {}
+
+    status = str(data.get('status') or '').strip().lower()
+    reason = str(data.get('reason') or '').strip()
+
+    if status not in ('active', 'suspended'):
+        raise ApiError('Invalid store status.', 400)
+
+    if not reason:
+        raise ApiError('Reason is required.', 400)
+
+    if len(reason) > 500:
+        raise ApiError(
+            'Reason must be 500 characters or less.',
+            400
+        )
+
+    try:
+        store_uuid = str(uuid.UUID(store_id))
+    except (ValueError, AttributeError):
+        raise ApiError('Invalid store ID.', 400)
+
+    with write_tx() as db:
+        row = db.execute(
+            'SELECT id, name, status FROM stores WHERE id=? FOR UPDATE',
+            (store_uuid,)
+        ).fetchone()
+
+        if not row:
+            raise ApiError('Store not found.', 404)
+
+        previous_status = row['status']
+
+        if previous_status == status:
+            raise ApiError(
+                'Store already has the requested status.',
+                400
+            )
+
+        result = db.execute(
+            'UPDATE stores SET status=? WHERE id=?',
+            (status, store_uuid)
+        )
+
+        if result.rowcount != 1:
+            raise ApiError('Store update failed.', 500)
+
+        action = (
+            'STORE_SUSPENDED'
+            if status == 'suspended'
+            else 'STORE_REACTIVATED'
+        )
+
+        db.execute(
+            """
+            INSERT INTO platform_admin_logs
+            (
+                admin_user_id,
+                store_id,
+                action,
+                previous_status,
+                new_status,
+                reason
+            )
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            (
+                admin_uid,
+                store_uuid,
+                action,
+                previous_status,
+                status,
+                reason
+            )
+        )
+
+    return jsonify({
+        'ok': True,
+        'store_id': store_uuid,
+        'store_name': row['name'],
+        'previous_status': previous_status,
+        'status': status,
+        'action': action
+    })
+
+
+@app.get('/api/v2/admin/logs')
+def v2_admin_activity_logs():
+    _v2_require_super_admin()
+
+    rows = get_db().execute(
+        """
+        SELECT
+            l.id,
+            l.admin_user_id,
+            l.store_id,
+            s.name AS store_name,
+            l.action,
+            l.previous_status,
+            l.new_status,
+            l.reason,
+            l.created_at
+        FROM platform_admin_logs l
+        JOIN stores s ON s.id = l.store_id
+        ORDER BY l.created_at DESC, l.id DESC
+        LIMIT 100
+        """
+    ).fetchall()
+
+    return jsonify([
+        {
+            'id': str(row['id']),
+            'admin_user_id': str(row['admin_user_id']),
+            'store_id': str(row['store_id']),
+            'store_name': row['store_name'],
+            'action': row['action'],
+            'previous_status': row['previous_status'],
+            'new_status': row['new_status'],
+            'reason': row['reason'],
+            'created_at': (
+                row['created_at'].isoformat()
+                if hasattr(row['created_at'], 'isoformat')
+                else str(row['created_at'])
+            )
+        }
+        for row in rows
+    ])
+
+
+
+
+
+
+@app.get('/api/v2/staff/invitations')
+def v2_list_staff_invitations():
+    sid, _, _ = _v2_require('owner')
+    rows = get_db().execute('SELECT id,email,role,status,created_at,expires_at FROM staff_invitations WHERE store_id=? ORDER BY created_at DESC LIMIT 100', (sid,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post('/api/v2/staff/invitations')
+def v2_invite_staff():
+    sid, uid, _ = _v2_require('owner')
+    d = request.get_json(silent=True) or {}
+    email = str(d.get('email', '')).strip().lower()
+    role = str(d.get('role', '')).strip().lower()
+    if len(email) > 254 or not re.fullmatch(r'[^\s@]+@[^\s@]+\.[^\s@]+', email):
+        raise ApiError('Enter a valid staff email address.', 400)
+    if role not in ('manager', 'cashier'):
+        raise ApiError('Choose manager or cashier.', 400)
+    if email == str(_verified_auth_user().get('email', '')).strip().lower():
+        raise ApiError('You cannot invite yourself.', 400)
+    with write_tx() as db:
+        db.execute("UPDATE staff_invitations SET status='expired' WHERE store_id=? AND status='pending' AND expires_at<=now()", (sid,))
+        already = db.execute('SELECT 1 FROM store_memberships m JOIN auth.users u ON u.id=m.user_id WHERE m.store_id=? AND lower(u.email)=?', (sid,email)).fetchone()
+        if already: raise ApiError('This user is already a store member.', 409)
+        exists = db.execute("SELECT 1 FROM staff_invitations WHERE store_id=? AND lower(trim(email))=? AND status='pending'", (sid,email)).fetchone()
+        if exists: raise ApiError('An invitation is already pending for this email.', 409)
+        row = db.execute("INSERT INTO staff_invitations(store_id,email,role,invited_by) VALUES (?,?,?,?) RETURNING id", (sid,email,role,uid)).fetchone()
+    return jsonify({'id':str(row['id']), 'email':email,'role':role,'message':'Invitation saved. Share its ID privately with the invited staff member; email delivery is not enabled yet.'}), 201
+
+
+@app.post('/api/v2/staff/invitations/<invitation_id>/revoke')
+def v2_revoke_invitation(invitation_id):
+    sid, _, _ = _v2_require('owner')
+    with write_tx() as db:
+        row = db.execute("UPDATE staff_invitations SET status='revoked' WHERE id=? AND store_id=? AND status='pending' RETURNING id", (invitation_id,sid)).fetchone()
+        if not row: raise ApiError('Pending invitation not found.', 404)
+    return jsonify({'ok':True})
+
+
+@app.post('/api/v2/staff/accept')
+def v2_accept_invitation():
+    user = _verified_auth_user()
+    uid = str(user['id'])
+    email = str(user.get('email','')).strip().lower()
+    d = request.get_json(silent=True) or {}
+    invitation_id = str(d.get('invitation_id','')).strip()
+    try:
+        import uuid
+        uuid.UUID(invitation_id)
+    except (ValueError, AttributeError):
+        raise ApiError('Invalid invitation ID.', 400)
+    with write_tx() as db:
+        inv = db.execute('SELECT * FROM staff_invitations WHERE id=? FOR UPDATE', (invitation_id,)).fetchone()
+        if not inv or inv['status']!='pending': raise ApiError('Invitation is not pending.', 404)
+        if inv['expires_at'] <= datetime.now(timezone.utc): raise ApiError('Invitation has expired.', 410)
+        if inv['email'].strip().lower()!=email: raise ApiError('This invitation belongs to a different verified email.', 403)
+        # Invitation acceptance is a store write: suspension must block it too.
+        store = db.execute('SELECT status FROM stores WHERE id=?', (inv['store_id'],)).fetchone()
+        if not store or store['status'] != 'active':
+            raise ApiError('This store is suspended or unavailable.', 403)
+        exists = db.execute('SELECT 1 FROM store_memberships WHERE store_id=? AND user_id=?', (inv['store_id'],uid)).fetchone()
+        if exists: raise ApiError('You already belong to this store.', 409)
+        db.execute('INSERT INTO store_memberships(store_id,user_id,role) VALUES (?,?,?)', (inv['store_id'],uid,inv['role']))
+        db.execute("UPDATE staff_invitations SET status='accepted',accepted_at=now() WHERE id=?", (invitation_id,))
+        db.execute("INSERT INTO user_profiles(user_id,full_name) VALUES (?,?) ON CONFLICT(user_id) DO NOTHING", (uid, str((user.get('user_metadata') or {}).get('full_name') or email).strip()[:120]))
+    return jsonify({'ok':True,'message':'Invitation accepted. Open your store dashboard.'})
+
+
+@app.get('/api/v2/staff/members')
+def v2_staff_members():
+    sid, _, _ = _v2_require('owner')
+    rows = get_db().execute('SELECT m.user_id,m.role,u.email,p.full_name FROM store_memberships m JOIN auth.users u ON u.id=m.user_id LEFT JOIN user_profiles p ON p.user_id=m.user_id WHERE m.store_id=? ORDER BY m.created_at', (sid,)).fetchall()
+    return jsonify([dict(r) for r in rows])
+
+
+@app.post('/api/v2/staff/members/<user_id>/remove')
+def v2_remove_staff(user_id):
+    sid, _, _ = _v2_require('owner')
+    with write_tx() as db:
+        row=db.execute("DELETE FROM store_memberships WHERE store_id=? AND user_id=? AND role IN ('manager','cashier') RETURNING user_id", (sid,user_id)).fetchone()
+        if not row: raise ApiError('Staff member not found.', 404)
+    return jsonify({'ok':True})
+
+
+def _v2_product(db, sid, pid):
+    row = db.execute('SELECT * FROM products WHERE store_id=? AND id=?', (sid,pid)).fetchone()
+    if not row:
+        raise ApiError('Product not found in your store.', 404)
+    return row
+
+
+def _v2_customer(db, sid, cid):
+    row = db.execute('SELECT * FROM customers WHERE store_id=? AND id=?', (sid,cid)).fetchone()
+    if not row:
+        raise ApiError('Customer not found in your store.', 404)
+    return row
+
+
+@app.get('/api/v2/dashboard')
+def v2_dashboard_data():
+    sid, _, store = _v2_context()
+    db = get_db()
+    prows = db.execute('SELECT * FROM products WHERE store_id=? ORDER BY name', (sid,)).fetchall()
+    customers = db.execute('SELECT * FROM customers WHERE store_id=? ORDER BY name', (sid,)).fetchall()
+    today_sales = db.execute('SELECT quantity,unit_price_cents,unit_cost_cents FROM sales WHERE store_id=? AND sold_at LIKE ?',
+        (sid,today().isoformat()+'%')).fetchall()
+    all_sales = db.execute('SELECT COALESCE(SUM(quantity*unit_price_cents),0) AS total FROM sales WHERE store_id=?', (sid,)).fetchone()
+    low = [product_json(r) for r in prows if r['quantity'] <= r['reorder_level']]
+    return jsonify({'store': {'id':sid,'name':store['name'],'role':store['role']},
+        'product_count':len(prows),'low_stock':low,'customer_count':len(customers),
+        'outstanding':sum(r['balance_cents'] for r in customers)/100,
+        'today_sales':sum(r['quantity']*r['unit_price_cents'] for r in today_sales)/100,
+        'today_transactions':len(today_sales),
+        'today_profit_known':sum(r['quantity']*(r['unit_price_cents']-r['unit_cost_cents']) for r in today_sales if r['unit_cost_cents'] is not None)/100,
+        'today_profit_complete':all(r['unit_cost_cents'] is not None for r in today_sales),
+        'total_cash_sales':all_sales['total']/100})
+
+
+@app.get('/api/v2/products')
+def v2_products():
+    sid,_,_= _v2_context()
+    return jsonify([product_json(r) for r in get_db().execute('SELECT * FROM products WHERE store_id=? ORDER BY name', (sid,)).fetchall()])
+
+
+@app.post('/api/v2/products')
+def v2_add_product():
+    sid,_,_=_v2_require('owner','manager','cashier')
+    d=request.get_json(silent=True) or {}
+    pid=text_field(d,'id','Product ID',30)
+    if not re.fullmatch(r'[\w.\-]+',pid):
+        raise ApiError('Invalid product ID.')
+    name=text_field(d,'name','Name',80)
+    category=text_field(d,'category','Category',40,required=False)
+    price=parse_money(d.get('price'),'Price',allow_zero=True)
+    cost=parse_money(d.get('cost'),'Purchase cost',allow_zero=True) if str(d.get('cost','')).strip() else None
+    qty=parse_int(d.get('quantity'),'Quantity')
+    reorder=parse_int(d.get('reorder_level',10),'Reorder level')
+    exp=text_field(d,'expiration','Expiration date',10,required=False) or None
+    if exp:
+        try: date.fromisoformat(exp)
+        except ValueError: raise ApiError('Invalid expiration date.')
+    try:
+        with write_tx() as db:
+            db.execute('INSERT INTO products (store_id,id,name,category,price_cents,cost_cents,quantity,reorder_level,expiration) VALUES (?,?,?,?,?,?,?,?,?)',
+                (sid,pid,name,category,price,cost,qty,reorder,exp))
+    except Exception as exc:
+        if 'duplicate key' in str(exc).lower(): raise ApiError('Product ID already exists in your store.',409)
+        raise
+    return jsonify(product_json(_v2_product(get_db(),sid,pid))),201
+
+
+@app.patch('/api/v2/products/<pid>')
+def v2_edit_product(pid):
+    sid,_,_=_v2_require('owner','manager','cashier')
+    d=request.get_json(silent=True)
+    if not isinstance(d,dict): raise ApiError('Invalid product details.')
+    # Do not accept stock or product ID edits here: stock is changed only via restock/sales.
+    allowed={'name','category','price','cost','reorder_level','expiration'}
+    if not d or set(d)-allowed: raise ApiError('Unsupported product fields.')
+    updates={}
+    if 'name' in d: updates['name']=text_field(d,'name','Name',80)
+    if 'category' in d: updates['category']=text_field(d,'category','Category',40,required=False)
+    if 'price' in d: updates['price_cents']=parse_money(d['price'],'Price',allow_zero=True)
+    if 'cost' in d:
+        updates['cost_cents']=parse_money(d['cost'],'Purchase cost',allow_zero=True) if str(d['cost'] if d['cost'] is not None else '').strip() else None
+    if 'reorder_level' in d: updates['reorder_level']=parse_int(d['reorder_level'],'Reorder level')
+    if 'expiration' in d:
+        exp=str(d['expiration'] or '').strip()
+        if exp:
+            try: date.fromisoformat(exp)
+            except ValueError: raise ApiError('Invalid expiration date.')
+        updates['expiration']=exp or None
+    fields=list(updates)
+    with write_tx() as db:
+        result=db.execute('UPDATE products SET '+', '.join(f'{field}=?' for field in fields)+' WHERE store_id=? AND id=?',
+            tuple(updates[field] for field in fields)+(sid,pid))
+        if result.rowcount != 1: raise ApiError('Product not found.',404)
+    return jsonify(product_json(_v2_product(get_db(),sid,pid)))
+
+
+@app.post('/api/v2/products/<pid>/restock')
+def v2_restock(pid):
+    sid, uid, _ = _v2_require('owner', 'manager', 'cashier')
+    qty = parse_int((request.get_json(silent=True) or {}).get('quantity'), 'Quantity', 1)
+    with write_tx() as db:
+        product = _v2_product(db, sid, pid)
+        before = int(product['quantity'])
+        after = before + qty
+        result = db.execute(
+            'UPDATE products SET quantity=? WHERE store_id=? AND id=?',
+            (after, sid, pid)
+        )
+        if result.rowcount != 1:
+            raise ApiError('Product not found.', 404)
+        db.execute(
+            """INSERT INTO inventory_movements
+               (store_id, product_id, movement_type, quantity_change,
+                quantity_before, quantity_after, remarks, performed_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (sid, pid, 'STOCK_IN', qty, before, after, 'Product restocked', uid)
+        )
+    return jsonify(product_json(_v2_product(get_db(), sid, pid)))
+
+
+@app.post('/api/v2/products/<pid>/adjust')
+def v2_adjust_stock(pid):
+    sid, uid, _ = _v2_require('owner', 'manager')
+    data = request.get_json(silent=True) or {}
+
+    new_qty = parse_int(
+        data.get('new_quantity'),
+        'New quantity',
+        0
+    )
+
+    reason = str(data.get('reason') or '').strip()
+    if not reason:
+        raise ApiError('Adjustment reason is required.', 400)
+    if len(reason) > 500:
+        raise ApiError('Reason must be 500 characters or less.', 400)
+
+    with write_tx() as db:
+        product = _v2_product(db, sid, pid)
+        before = int(product['quantity'])
+        difference = new_qty - before
+
+        if difference == 0:
+            raise ApiError(
+                'New quantity must differ from current stock.',
+                400
+            )
+
+        result = db.execute(
+            'UPDATE products SET quantity=? '
+            'WHERE store_id=? AND id=?',
+            (new_qty, sid, pid)
+        )
+        if result.rowcount != 1:
+            raise ApiError('Product not found.', 404)
+
+        db.execute(
+            """INSERT INTO inventory_movements
+               (store_id, product_id, movement_type,
+                quantity_change, quantity_before,
+                quantity_after, remarks, performed_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                sid, pid, 'ADJUSTMENT',
+                difference, before, new_qty,
+                reason, uid
+            )
+        )
+
+    return jsonify(
+        product_json(_v2_product(get_db(), sid, pid))
+    )
+
+
+
+
+@app.get('/api/v2/inventory/movements')
+def v2_inventory_movements():
+    # Never trust a store_id supplied by the browser. The verified membership
+    # determines the only store whose history may be returned.
+    sid, _, _ = _v2_require('owner', 'manager', 'cashier')
+    movement_type = request.args.get('type', '').strip().upper()
+    if movement_type and movement_type not in ('STOCK_IN', 'STOCK_OUT', 'ADJUSTMENT'):
+        raise ApiError('Invalid movement type.', 400)
+    try:
+        limit = int(request.args.get('limit', '200'))
+    except (TypeError, ValueError):
+        raise ApiError('Invalid limit.', 400)
+    if not 1 <= limit <= 500:
+        raise ApiError('Limit must be between 1 and 500.', 400)
+    sql = """SELECT im.id, im.product_id, p.name AS product_name,
+                    im.movement_type, im.quantity_change, im.quantity_before,
+                    im.quantity_after, im.remarks, im.performed_by, im.created_at
+             FROM inventory_movements im
+             JOIN products p ON p.store_id=im.store_id AND p.id=im.product_id
+             WHERE im.store_id=?"""
+    params = [sid]
+    if movement_type:
+        sql += ' AND im.movement_type=?'
+        params.append(movement_type)
+    sql += ' ORDER BY im.created_at DESC, im.id DESC LIMIT ?'
+    params.append(limit)
+    rows = get_db().execute(sql, tuple(params)).fetchall()
+    return jsonify([dict(row) for row in rows])
+
+
+@app.post('/api/v2/sales')
+def v2_sale():
+    sid, uid, _ = _v2_require(
+        'owner', 'manager', 'cashier'
+    )
+
+    d = request.get_json(silent=True) or {}
+    qty = parse_int(d.get('quantity'), 'Quantity', 1)
+    pid = str(d.get('product_id', '')).strip()
+
+    with write_tx() as db:
+        product = _v2_product(db, sid, pid)
+
+        quantity_before = int(product['quantity'])
+        quantity_after = quantity_before - qty
+
+        result = db.execute(
+            '''
+            UPDATE products
+            SET quantity = quantity - ?
+            WHERE store_id = ?
+              AND id = ?
+              AND quantity >= ?
+            ''',
+            (qty, sid, pid, qty)
+        )
+
+        if result.rowcount != 1:
+            raise ApiError('Insufficient stock.', 400)
+
+        db.execute(
+            '''
+            INSERT INTO sales (
+                store_id,
+                product_id,
+                product_name,
+                quantity,
+                unit_price_cents,
+                unit_cost_cents,
+                sold_at,
+                username
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                sid,
+                pid,
+                product['name'],
+                qty,
+                product['price_cents'],
+                product['cost_cents'],
+                now().isoformat(timespec='seconds'),
+                uid
+            )
+        )
+
+        db.execute(
+            '''
+            INSERT INTO inventory_movements (
+                store_id,
+                product_id,
+                movement_type,
+                quantity_change,
+                quantity_before,
+                quantity_after,
+                remarks,
+                performed_by
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ''',
+            (
+                sid,
+                pid,
+                'STOCK_OUT',
+                -qty,
+                quantity_before,
+                quantity_after,
+                'Product sold',
+                uid
+            )
+        )
+
+    return jsonify({
+        'ok': True,
+        'total': qty * product['price_cents'] / 100
+    })
+
+
+
+@app.get('/api/v2/customers')
+def v2_customers():
+    sid,_,_=_v2_context()
+    return jsonify([customer_json(r) for r in get_db().execute('SELECT * FROM customers WHERE store_id=? ORDER BY name',(sid,)).fetchall()])
+
+
+@app.post('/api/v2/customers')
+def v2_add_customer():
+    sid,_,_=_v2_require('owner','manager')
+    d=request.get_json(silent=True) or {}
+    cid=text_field(d,'id','Customer ID',30)
+    if not re.fullmatch(r'[\w.\-]+',cid): raise ApiError('Invalid customer ID.')
+    name=text_field(d,'name','Customer name',80)
+    contact=text_field(d,'contact','Contact',40,required=False)
+    try:
+        with write_tx() as db:
+            db.execute('INSERT INTO customers(store_id,id,name,contact,balance_cents) VALUES (?,?,?,?,0)',(sid,cid,name,contact))
+    except Exception as exc:
+        if 'duplicate key' in str(exc).lower(): raise ApiError('Customer ID already exists in your store.',409)
+        raise
+    return jsonify(customer_json(_v2_customer(get_db(),sid,cid))),201
+
+
+@app.post('/api/v2/customers/<cid>/charge')
+def v2_charge(cid):
+    sid,uid,_=_v2_require('owner','manager')
+    d=request.get_json(silent=True) or {}
+    pid=str(d.get('product_id','')).strip()
+    qty=parse_int(d.get('quantity'),'Quantity',1)
+    with write_tx() as db:
+        customer=_v2_customer(db,sid,cid)
+        product=_v2_product(db,sid,pid)
+        result=db.execute('UPDATE products SET quantity=quantity-? WHERE store_id=? AND id=? AND quantity>=?',(qty,sid,pid,qty))
+        if result.rowcount != 1: raise ApiError('Insufficient stock.',400)
+        amount=qty*product['price_cents']
+        db.execute('UPDATE customers SET balance_cents=balance_cents+? WHERE store_id=? AND id=?',(amount,sid,cid))
+        db.execute('INSERT INTO credit_tx(store_id,customer_id,tx_type,amount_cents,description,tx_at,username) VALUES (?,?,?,?,?,?,?)',
+            (sid,cid,'CHARGE',amount,f'{qty} x {product["name"]}',now().isoformat(timespec='seconds'),uid))
+    return jsonify({'ok':True,'amount':amount/100})
+
+
+@app.post('/api/v2/customers/<cid>/payment')
+def v2_payment(cid):
+    sid,uid,_=_v2_require('owner','manager')
+    amount=parse_money((request.get_json(silent=True) or {}).get('amount'),'Payment')
+    with write_tx() as db:
+        _v2_customer(db,sid,cid)
+        result=db.execute('UPDATE customers SET balance_cents=balance_cents-? WHERE store_id=? AND id=? AND balance_cents>=?',(amount,sid,cid,amount))
+        if result.rowcount != 1: raise ApiError('Payment exceeds balance.',400)
+        db.execute('INSERT INTO credit_tx(store_id,customer_id,tx_type,amount_cents,description,tx_at,username) VALUES (?,?,?,?,?,?,?)',
+            (sid,cid,'PAYMENT',amount,'Payment received',now().isoformat(timespec='seconds'),uid))
+    return jsonify({'ok':True,'amount':amount/100})
+
+
+@app.get('/api/v2/customers/<cid>/ledger')
+def v2_ledger(cid):
+    sid,_,_=_v2_require('owner','manager')
+    db=get_db()
+    customer=_v2_customer(db,sid,cid)
+    rows=db.execute('SELECT * FROM credit_tx WHERE store_id=? AND customer_id=? ORDER BY id DESC LIMIT 200',(sid,cid)).fetchall()
+    return jsonify({'customer':customer_json(customer),'transactions':[{'type':r['tx_type'],'amount':r['amount_cents']/100,'description':r['description'],'at':r['tx_at']} for r in rows]})
+
+
+@app.get('/api/v2/reports')
+def v2_reports():
+    sid,_,_=_v2_require('owner','manager')
+    db=get_db()
+    sales=db.execute('SELECT product_name,quantity,unit_price_cents,unit_cost_cents,sold_at FROM sales WHERE store_id=? ORDER BY id DESC LIMIT 500',(sid,)).fetchall()
+    return jsonify({'recent_sales':[{'product':r['product_name'],'quantity':r['quantity'],'total':r['quantity']*r['unit_price_cents']/100,'at':r['sold_at']} for r in sales],
+        'note':'Showing the latest 500 cash-sale records for this store.'})
 
 init_db()
 

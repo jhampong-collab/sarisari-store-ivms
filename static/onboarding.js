@@ -1,6 +1,10 @@
 "use strict";
-let cfg, token=null;
+let cfg, token=null, recoveryToken=null, installPrompt=null;
 const $=id=>document.getElementById(id);
+const invitation=new URLSearchParams(location.search).get('invite');
+const isStaff=Boolean(invitation && /^[0-9a-f-]{36}$/i.test(invitation));
+const invitationRedirect=location.origin+'/?invite='+encodeURIComponent(invitation||'');
+
 let message=t=>{$('message').textContent=t};
 const request=async(path,method='GET',body=null,auth=false)=>{
  const r=await fetch(path,{method,headers:{'Content-Type':'application/json',...(auth?{'Authorization':'Bearer '+token,'X-Requested-With':'sari-app'}:{'X-Requested-With':'sari-app'})},body:body?JSON.stringify(body):undefined});
@@ -10,17 +14,142 @@ const supa=async(path,body)=>request(cfg.url+'/auth/v1/'+path,'POST',body);
 async function init(){cfg=await request('/api/v2/config');if(!cfg.url||!cfg.key)throw Error('Configure Supabase URL and publishable key on Render.');
  // Use session storage only for this onboarding test; never put passwords in storage.
  token=sessionStorage.getItem('sari_v2_test_token');
- const hash=new URLSearchParams(location.hash.slice(1));if(hash.get('access_token')){token=hash.get('access_token');sessionStorage.setItem('sari_v2_test_token',token);history.replaceState({},'',location.pathname);message('Email confirmed. Click Activate my verified store.');}
+ const hash=new URLSearchParams(location.hash.slice(1));if(hash.get('type')==='recovery' && hash.get('access_token')){recoveryToken=hash.get('access_token');history.replaceState({},'',location.pathname+location.search);showRecoveryMode();message('Create a new password for your account.');return;}if(hash.get('access_token')){token=hash.get('access_token');sessionStorage.setItem('sari_v2_test_token',token);history.replaceState({},'',location.pathname+location.search);message(isStaff?'Email verified. Sign in to join your store.':'Email confirmed. Sign in to activate your store.');}
 }
-async function auth(path,body){const r=await fetch(cfg.url+'/auth/v1/'+path+(path==='signup'?'?redirect_to='+encodeURIComponent(location.origin+'/'):''),{method:'POST',headers:{'apikey':cfg.key,'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.msg||j.error_description||j.error||'Authentication failed');return j;}
+async function auth(path,body){const r=await fetch(cfg.url+'/auth/v1/'+path+(path==='signup'?'?redirect_to='+encodeURIComponent(isStaff?invitationRedirect:location.origin+'/'):''),{method:'POST',headers:{'apikey':cfg.key,'Content-Type':'application/json'},body:JSON.stringify(body)});const j=await r.json().catch(()=>({}));if(!r.ok)throw Error(j.msg||j.error_description||j.error||'Authentication failed');return j;}
 $('signup').onclick=async()=>{try{if(!$('store').value.trim()||!$('name').value.trim())throw Error('Enter store name and owner name.');if($('password').value.length<10)throw Error('Use at least 10 password characters.');await auth('signup',{email:$('email').value.trim(),password:$('password').value,data:{store_name:$('store').value.trim(),full_name:$('name').value.trim()},options:{email_redirect_to:location.origin+'/'} });message('Check your email for the verification link. After verification, return here and sign in.');}catch(e){message(e.message)}};
-$('signin').onclick=async()=>{try{const j=await auth('token?grant_type=password',{email:$('email').value.trim(),password:$('password').value});if(!j.access_token)throw Error('Sign in failed. Verify your email first.');token=j.access_token;sessionStorage.setItem('sari_v2_test_token',token);message('Signed in. Click Activate my verified store.');}catch(e){message(e.message)}};
-$('activate').onclick=async()=>{try{if(!token)throw Error('Please sign in first.');const j=await request('/api/v2/provision','POST',{},true);message(j.message+'\nStore ID: '+j.store_id);}catch(e){message(e.message)}};
+$('signin').onclick=async()=>{try{const j=await auth('token?grant_type=password',{email:$('email').value.trim(),password:$('password').value});if(!j.access_token)throw Error('Sign in failed. Verify your email first.');token=j.access_token;sessionStorage.setItem('sari_v2_test_token',token);message('Signed in. Checking your store…');if(isStaff){await acceptStaff();return;}
+ // Check platform privileges before requiring store membership.
+ // Only a verified platform admin can enter the separate admin workspace.
+ try {
+   await request('/api/v2/admin/check','GET',null,true);
+   location.assign('/admin');
+   return;
+ } catch (e) {
+   if (!/Super Admin access required/i.test(e.message)) {
+     message('Admin access check failed: '+e.message);
+     return;
+   }
+ }
+ try{const a=await request('/api/v2/account','GET',null,true);if(a.store){location.assign('/dashboard');return;}}catch(e){message('Account check failed: '+e.message);return;}message('Click Activate my verified store.');}catch(e){message(e.message)}};
+$('activate').onclick=async()=>{try{if(!token)throw Error('Please sign in first.');const j=await request('/api/v2/provision','POST',{},true);message(j.message+'\nStore ID: '+j.store_id);location.assign('/dashboard');}catch(e){message(e.message)}};
 $('signout').onclick=()=>{token=null;sessionStorage.removeItem('sari_v2_test_token');message('Signed out locally.')};
 init().catch(e=>message(e.message));
 
 // Presentation controls only; existing authentication handlers are preserved.
-const showMode=mode=>{const reg=mode==='register';$('register-fields').hidden=!reg;$('signup').hidden=!reg;$('signin').hidden=reg;$('password-hint').hidden=!reg;$('heading').textContent=reg?'Create your store':'Welcome back';$('subtitle').textContent=reg?'Start with a verified, private store account.':'Sign in to your store workspace.';$('tab-login').classList.toggle('active',!reg);$('tab-register').classList.toggle('active',reg);$('password').autocomplete=reg?'new-password':'current-password';};
+const showMode=mode=>{const reg=mode==='register';$('register-fields').hidden=!reg||isStaff;$('signup').hidden=!reg||isStaff;$('staff-signup').hidden=!reg||!isStaff;$('signin').hidden=reg;$('password-hint').hidden=!reg;$('heading').textContent=reg?(isStaff?'Create staff account':'Create your store'):(isStaff?'Staff sign in':'Welcome back');$('subtitle').textContent=reg?(isStaff?'Create your personal login to join the invited store.':'Start with a verified, private store account.'):(isStaff?'Sign in to join your assigned store.':'Sign in to your store workspace.');$('tab-login').classList.toggle('active',!reg);$('tab-register').classList.toggle('active',reg);$('password').autocomplete=reg?'new-password':'current-password';};
 $('tab-login').onclick=()=>showMode('login');$('tab-register').onclick=()=>showMode('register');$('toggle-password').onclick=()=>{const input=$('password');input.type=input.type==='password'?'text':'password';$('toggle-password').textContent=input.type==='password'?'Show':'Hide';};
-const oldMessage=message;message=t=>{oldMessage(t);if(/Signed in|Email confirmed/.test(t)){$('activate').hidden=false;$('signout').hidden=false;}if(/Store account activated/.test(t)){$('activate').hidden=true;$('signout').hidden=false;}if(/Signed out/.test(t)){$('activate').hidden=true;$('signout').hidden=true;}};
+const oldMessage=message;message=t=>{oldMessage(t);if(/Signed in|Email confirmed/.test(t)){$('activate').hidden=isStaff;$('signout').hidden=false;}if(/Store account activated/.test(t)){$('activate').hidden=true;$('signout').hidden=false;}if(/Signed out/.test(t)){$('activate').hidden=true;$('signout').hidden=true;}};
 showMode('login');
+
+// Step 7B.5: link-based staff onboarding. Never provision a new store for staff.
+async function acceptStaff(){
+  if(!isStaff || !token)throw Error('Open the invitation link and sign in first.');
+  const result=await request('/api/v2/staff/accept','POST',{invitation_id:invitation},true);
+  message(result.message);
+  location.assign('/dashboard');
+}
+$('staff-signup').onclick=async()=>{
+  try{
+    if(!isStaff)throw Error('A staff invitation link is required.');
+    if($('password').value.length<10)throw Error('Use at least 10 password characters.');
+    const email=$('email').value.trim();
+    if(!email)throw Error('Enter your invited email.');
+    message('Creating staff account…');
+    await auth('signup',{email,password:$('password').value,
+      data:{full_name:email.split('@')[0]},
+      options:{email_redirect_to:invitationRedirect}});
+    message('Check your email and verify your account. Then return to this invitation link and sign in.');
+  }catch(e){message(e.message)}
+};
+if(isStaff){
+  $('activate').hidden=true;
+  $('heading').textContent='Staff sign in';
+  $('subtitle').textContent='Use your invited email to join your assigned store.';
+  $('tab-register').textContent='Create staff account';
+  $('tab-login').textContent='Staff sign in';
+  $('register-fields').hidden=true;
+  const notice=document.querySelector('.notice');
+  if(notice)notice.textContent='Staff accounts use Supabase email verification. You will not create a new store.';
+  // Do not offer the owner activation flow for invitation links.
+  $('activate').hidden=true;
+}
+
+
+// Password recovery and verification resend use Supabase Auth; no admin service key is exposed.
+function showRecoveryMode(){
+  $('recovery-fields').hidden=false;
+  document.querySelector('.tabs').hidden=true;
+  $('register-fields').hidden=true;
+  $('email').hidden=true;
+  $('password').hidden=true;
+  document.querySelector('label[for="email"]').hidden=true;
+  document.querySelector('.password-head').hidden=true;
+  document.querySelector('.auth-actions').hidden=true;
+  $('signin').hidden=true;$('signup').hidden=true;$('staff-signup').hidden=true;$('activate').hidden=true;
+  $('heading').textContent='Set a new password';
+  $('subtitle').textContent='Choose a strong password to secure your account.';
+}
+function restoreSignIn(){
+  recoveryToken=null;
+  $('recovery-fields').hidden=true;
+  document.querySelector('.tabs').hidden=false;
+  $('email').hidden=false;$('password').hidden=false;
+  document.querySelector('label[for="email"]').hidden=false;
+  document.querySelector('.password-head').hidden=false;
+  document.querySelector('.auth-actions').hidden=false;
+  showMode('login');
+}
+$('forgot-password').onclick=async()=>{
+  const email=$('email').value.trim();
+  if(!email || !$('email').checkValidity()){message('Enter your valid email address first.');$('email').focus();return;}
+  const button=$('forgot-password');button.disabled=true;
+  try{
+    await auth('recover',{email});
+    message('If this email is registered, you will receive a password reset link. Check your inbox and spam folder.');
+  }catch(e){message('Could not request a password reset: '+e.message);}
+  finally{button.disabled=false;}
+};
+$('resend-verification').onclick=async()=>{
+  const email=$('email').value.trim();
+  if(!email || !$('email').checkValidity()){message('Enter your valid email address first.');$('email').focus();return;}
+  const button=$('resend-verification');button.disabled=true;
+  try{
+    await auth('resend',{type:'signup',email,options:{email_redirect_to:location.origin+'/'}});
+    message('If this account needs verification, a new email will be sent. Check your inbox and spam folder.');
+  }catch(e){message('Could not resend verification: '+e.message);}
+  finally{button.disabled=false;}
+};
+$('save-new-password').onclick=async()=>{
+  const password=$('new-password').value;
+  if(!recoveryToken){message('Reset link is missing or expired. Request a new password reset email.');return;}
+  if(password.length<10){message('Use at least 10 password characters.');return;}
+  if(password!==$('confirm-password').value){message('Passwords do not match.');return;}
+  const button=$('save-new-password');button.disabled=true;
+  try{
+    const response=await fetch(cfg.url+'/auth/v1/user',{
+      method:'PUT',headers:{'apikey':cfg.key,'Authorization':'Bearer '+recoveryToken,'Content-Type':'application/json'},
+      body:JSON.stringify({password})
+    });
+    const data=await response.json().catch(()=>({}));
+    if(!response.ok)throw Error(data.msg||data.error_description||data.error||'Password update failed.');
+    $('password').value='';$('new-password').value='';$('confirm-password').value='';
+    restoreSignIn();message('Password updated. Sign in with your new password.');
+  }catch(e){message(e.message);}
+  finally{button.disabled=false;}
+};
+$('cancel-recovery').onclick=()=>{restoreSignIn();message('Enter your email and password to sign in.');};
+
+// Android/Chromium install prompt; iOS users use Safari Share > Add to Home Screen.
+window.addEventListener('beforeinstallprompt',event=>{
+  event.preventDefault();installPrompt=event;$('install-app').hidden=false;
+});
+$('install-app').onclick=async()=>{
+  if(!installPrompt)return;
+  const prompt=installPrompt;installPrompt=null;$('install-app').hidden=true;
+  await prompt.prompt();
+};
+window.addEventListener('appinstalled',()=>{$('install-app').hidden=true;installPrompt=null;});
+if('serviceWorker' in navigator){
+  window.addEventListener('load',()=>navigator.serviceWorker.register('/sw.js',{scope:'/'}).catch(()=>{}));
+}
