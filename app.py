@@ -31,9 +31,8 @@ from functools import wraps
 from flask import Flask, Response, g, jsonify, request, send_from_directory, session
 from werkzeug.security import check_password_hash, generate_password_hash
 
-# Bump this when you ship an update. Every phone sees an "update available" banner.
-# Bump this when you ship an update. Every phone sees an "update available" banner.
-APP_VERSION = "2.1.0-test"
+# Bump this version for each production release.
+APP_VERSION = "2.0.0"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
