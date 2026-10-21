@@ -32,6 +32,7 @@ from flask import Flask, Response, g, jsonify, request, send_from_directory, ses
 from werkzeug.security import check_password_hash, generate_password_hash
 
 # Bump this when you ship an update. Every phone sees an "update available" banner.
+# Bump this when you ship an update. Every phone sees an "update available" banner.
 APP_VERSION = "2.1.0-test"
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
